@@ -29,7 +29,7 @@ class FR3Robot(Robot):
     def __init__(self, config: FR3RobotConfig):
         super().__init__(config)
         self.config = config
-        self.cameras = make_cameras_from_configs(config.cameras)
+        # self.cameras = make_cameras_from_configs(config.cameras)
         
         self.node = None
         self.executor_thread = None
@@ -54,7 +54,7 @@ class FR3Robot(Robot):
 
         if not rclpy.ok():
             rclpy.init()
-            
+        
         self.node = rclpy.create_node('lerobot_fr3_vla_client')
 
         # 1. Pub/Sub 생성
@@ -94,9 +94,9 @@ class FR3Robot(Robot):
         else:
             print("Warning: Did not receive EE pose within timeout.")
 
-        # 카메라 연결
-        for cam in self.cameras.values():
-            cam.connect()
+        # # 카메라 연결
+        # for cam in self.cameras.values():
+        #     cam.connect()
 
         self._is_connected = True
         print(f"[{self.name}] VLA Client Connected and Ready!")
@@ -147,8 +147,8 @@ class FR3Robot(Robot):
         with self._lock:
             obs_dict["ee_pose"] = np.array(self._latest_ee_pose, dtype=np.float32)
 
-        for cam_key, cam in self.cameras.items():
-            obs_dict[cam_key] = cam.async_read()
+        # for cam_key, cam in self.cameras.items():
+        #     obs_dict[cam_key] = cam.async_read()
 
         return obs_dict
 
@@ -183,8 +183,8 @@ class FR3Robot(Robot):
         if not self.is_connected:
             return
 
-        for cam in self.cameras.values():
-            cam.disconnect()
+        # for cam in self.cameras.values():
+        #     cam.disconnect()
 
         # 제어 안전 종료: 활성화된 Goal이 있다면 Cancel 요청 전송
         if self._goal_handle is not None and self._goal_accepted:

@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from lerobot.cameras import CameraConfig
 from lerobot.robots import RobotConfig
+from lerobot.cameras.zmq import ZMQCamera, ZMQCameraConfig
+
 
 @dataclass
 class FR3RobotConfig(RobotConfig):
@@ -21,4 +23,10 @@ class FR3RobotConfig(RobotConfig):
     rotation_type: str = "rotation6d"  # "axis_angle", "euler", "quaternion", "rotation6d"
     arm_action_dim: int = 9  
     
-    cameras: dict[str, CameraConfig] = field(default_factory=dict)
+    # cameras: dict[str, CameraConfig] = field(
+    #     default_factory={
+    #         "wrist": ZMQCameraConfig(server_address=SAM3_HOST, port=5600, camera_name="wrist"),
+    #         "left":  ZMQCameraConfig(server_address=SAM3_HOST, port=5601, camera_name="left"),
+    #         "right": ZMQCameraConfig(server_address=SAM3_HOST, port=5602, camera_name="right"),
+    #     }
+    # )

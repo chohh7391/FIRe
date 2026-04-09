@@ -10,7 +10,8 @@ dependencies = [
     "torch",
     "numpy",
     "lerobot==0.4.4",
-    "rl_games"
+    "rl_games",
+    "opencv-python"
 ]
 
 [tool.setuptools]
