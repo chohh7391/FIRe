@@ -27,4 +27,4 @@ python scripts/play.py \
 --obs_dim 19 \
 --action_dim 6 \
 --device cuda:0
-```
+```# FIRe
