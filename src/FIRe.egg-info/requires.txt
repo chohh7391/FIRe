@@ -1,0 +1,4 @@
+torch
+numpy
+lerobot==0.4.4
+rl_games

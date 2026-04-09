@@ -1,0 +1,10 @@
+README.md
+pyproject.toml
+src/FIRe.egg-info/PKG-INFO
+src/FIRe.egg-info/SOURCES.txt
+src/FIRe.egg-info/dependency_links.txt
+src/FIRe.egg-info/requires.txt
+src/FIRe.egg-info/top_level.txt
+src/FIRe/lerobot_robot_fr3/src/lerobot_robot_fr3/__init__.py
+src/FIRe/lerobot_robot_fr3/src/lerobot_robot_fr3/config_fr3.py
+src/FIRe/lerobot_robot_fr3/src/lerobot_robot_fr3/fr3.py

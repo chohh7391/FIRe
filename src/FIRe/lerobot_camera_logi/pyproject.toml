@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_robot_fr3"
+version = "0.1.0"
+description = "Logitech Camera plugin for LeRobot"
+requires-python = ">=3.10"
+dependencies = [
+    "lerobot",
+    "numpy"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = { find = { where = ["src"] } }
