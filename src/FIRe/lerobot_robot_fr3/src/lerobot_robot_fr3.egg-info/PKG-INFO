@@ -1,7 +1,0 @@
-Metadata-Version: 2.4
-Name: lerobot_robot_fr3
-Version: 0.1.0
-Summary: FR3 VLA Robot plugin for LeRobot using ROS 2
-Requires-Python: >=3.10
-Requires-Dist: lerobot
-Requires-Dist: numpy

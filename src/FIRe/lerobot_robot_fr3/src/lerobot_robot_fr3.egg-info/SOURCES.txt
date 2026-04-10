@@ -1,9 +1,0 @@
-pyproject.toml
-src/lerobot_robot_fr3/__init__.py
-src/lerobot_robot_fr3/config_fr3.py
-src/lerobot_robot_fr3/fr3.py
-src/lerobot_robot_fr3.egg-info/PKG-INFO
-src/lerobot_robot_fr3.egg-info/SOURCES.txt
-src/lerobot_robot_fr3.egg-info/dependency_links.txt
-src/lerobot_robot_fr3.egg-info/requires.txt
-src/lerobot_robot_fr3.egg-info/top_level.txt
