@@ -5,9 +5,20 @@ conda create -n fire python=3.10
 conda activate fire
 ```
 
+```bash
+git clone --recursive https://github.com/chohh7391/FIRe.git
+```
+
 - install dependencies
 ```bash
 pip install -r requirements.txt
+```
+
+- create conda env for vision
+```bash
+conda create -n sam3 python=3.12
+conda activate sam3
+pip install -e src/FIRe/vision_server
 ```
 
 # How to run

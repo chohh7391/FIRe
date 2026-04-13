@@ -1,5 +1,6 @@
 # 1. 하위 로봇 제어 모듈을 Editable로 설치
 -e ./src/FIRe/lerobot_robot_fr3
+-e ./src/FIRe/lerobot_ft_sensor
 
 # 2. 최상위 프레임워크를 Editable로 설치
 -e .

@@ -2,6 +2,11 @@ from dataclasses import dataclass, field
 from lerobot.cameras import CameraConfig
 from lerobot.robots import RobotConfig
 from lerobot.cameras.zmq import ZMQCamera, ZMQCameraConfig
+from typing import Dict
+from lerobot_ft_sensor.configuration_ft_sensor import FTSensorConfig
+import os
+
+SOURCE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
 
 
 @dataclass
@@ -20,13 +25,25 @@ class FR3RobotConfig(RobotConfig):
     
     # --- VLA Chunk 설정 ---
     is_relative: bool = False
-    rotation_type: str = "rotation6d"  # "axis_angle", "euler", "quaternion", "rotation6d"
-    arm_action_dim: int = 9  
+    rotation_type: str = "axis_angle"  # "axis_angle", "euler", "quaternion", "rotation6d"
+    arm_action_dim: int = 6
     
-    # cameras: dict[str, CameraConfig] = field(
-    #     default_factory={
-    #         "wrist": ZMQCameraConfig(server_address=SAM3_HOST, port=5600, camera_name="wrist"),
-    #         "left":  ZMQCameraConfig(server_address=SAM3_HOST, port=5601, camera_name="left"),
-    #         "right": ZMQCameraConfig(server_address=SAM3_HOST, port=5602, camera_name="right"),
-    #     }
-    # )
+    ft_sensor: FTSensorConfig = FTSensorConfig(
+        config_path="/home/home/FIRe/src/FIRe/lerobot_ft_sensor/src/lerobot_ft_sensor/config/bota_binary.json"
+    )
+    cameras: Dict[str, CameraConfig] = field(
+        default_factory=lambda: {
+            "wrist": ZMQCameraConfig(
+                server_address="127.0.0.1", port=5555, camera_name="wrist", timeout_ms=5000,
+                width=640, height=480, fps=30
+            ),
+            "left":  ZMQCameraConfig(
+                server_address="127.0.0.1", port=5555, camera_name="left", timeout_ms=5000,
+                width=640, height=480, fps=30
+            ),
+            "right": ZMQCameraConfig(
+                server_address="127.0.0.1", port=5555, camera_name="right", timeout_ms=5000,
+                width=640, height=480, fps=30
+            )
+        }
+    )
