@@ -7,6 +7,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
 from std_msgs.msg import Header, Float64MultiArray
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import ReentrantCallbackGroup
 
 try:
     from cho_interfaces.action import VisionLanguageAction
@@ -17,9 +19,12 @@ except ImportError:
         "ROS 2 워크스페이스를 source 했는지 확인하세요."
     )
 
-from lerobot.cameras import make_cameras_from_configs
+from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.robots import Robot
 from .config_fr3 import FR3RobotConfig
+from .utils import RobotStateManager
+from lerobot_ft_sensor.configuration_ft_sensor import FTSensorConfig
+from lerobot_ft_sensor.ft_sensor import FTSensor
 
 
 class FR3Robot(Robot):
@@ -29,7 +34,8 @@ class FR3Robot(Robot):
     def __init__(self, config: FR3RobotConfig):
         super().__init__(config)
         self.config = config
-        # self.cameras = make_cameras_from_configs(config.cameras)
+        self.cameras = make_cameras_from_configs(config.cameras)
+        self.ft_sensor = FTSensor(self.config.ft_sensor)
         
         self.node = None
         self.executor_thread = None
@@ -40,9 +46,9 @@ class FR3Robot(Robot):
         self._goal_handle = None
         self._goal_accepted = False
         
-        # EE Pose 관측치
-        self._latest_ee_pose = []
-        self._lock = threading.Lock()
+        # update robot state & can get robot state from this
+        self.robot_state_manager = None
+        self.camera_state_manager = None
 
     @property
     def is_connected(self) -> bool:
@@ -57,17 +63,18 @@ class FR3Robot(Robot):
         
         self.node = rclpy.create_node('lerobot_fr3_vla_client')
 
-        # 1. Pub/Sub 생성
-        self.sub_ee_pose = self.node.create_subscription(
-            Float64MultiArray, self.config.observation_topic, self._ee_pose_callback, 10
-        )
+        self.action_cb_group = ReentrantCallbackGroup()
+
+        self.robot_state_manager = RobotStateManager(self.node)
+
         self.pub_action_chunk = self.node.create_publisher(
             ActionChunk, self.config.action_topic, 10
         )
 
         # 2. Action Client 생성
         self._action_client = ActionClient(
-            self.node, VisionLanguageAction, self.config.vla_action_server
+            self.node, VisionLanguageAction, self.config.vla_action_server,
+            callback_group=self.action_cb_group
         )
 
         # 3. 백그라운드 ROS 2 스레드 시작 (Action 통신을 위해 spin 필요)
@@ -82,21 +89,23 @@ class FR3Robot(Robot):
         # 5. Goal 전송 및 수락(Accept) 대기
         self._send_vla_goal()
 
-        # 6. 첫 EE Pose 데이터가 들어올 때까지 대기
         print(f"[{self.name}] Waiting for first EE pose observation...")
         timeout = 5.0
         start_time = time.time()
         while time.time() - start_time < timeout:
-            with self._lock:
-                if len(self._latest_ee_pose) > 0:
-                    break
+            # 초기 Pose 객체는 0으로 채워져 있으므로, 0이 아닌 값이 들어왔다면 TF가 업데이트된 것
+            if np.any(self.robot_state_manager.ee_pose != 0.0):
+                break
             time.sleep(0.1)
         else:
-            print("Warning: Did not receive EE pose within timeout.")
+            print("Warning: Did not receive EE pose (TF transform) within timeout.")
 
-        # # 카메라 연결
-        # for cam in self.cameras.values():
-        #     cam.connect()
+        # connect to ft sensor
+        self.ft_sensor.connect()
+
+        # connect to cameras
+        for cam in self.cameras.values():
+            cam.connect()
 
         self._is_connected = True
         print(f"[{self.name}] VLA Client Connected and Ready!")
@@ -133,30 +142,50 @@ class FR3Robot(Robot):
         self._goal_accepted = True
 
     def _spin_ros(self):
-        rclpy.spin(self.node)
-
-    def _ee_pose_callback(self, msg: Float64MultiArray):
-        with self._lock:
-            self._latest_ee_pose = list(msg.data)
+        executor = MultiThreadedExecutor(num_threads=4)
+        executor.add_node(self.node)
+        try:
+            executor.spin()
+        finally:
+            executor.shutdown()
 
     def get_observation(self) -> Dict[str, Any]:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
 
+        # TODO: change ee_pos, ee_quat to fingertip frame and so on
         obs_dict = {}
-        with self._lock:
-            obs_dict["ee_pose"] = np.array(self._latest_ee_pose, dtype=np.float32)
+        obs_dict["fingertip_pos"] = self.robot_state_manager.ee_pos
+        # obs_dict["fingertip_pos_rel_fixed"] = self.robot_state_manager.ee_pos - object_pos
+        obs_dict["fingertip_quat"] = self.robot_state_manager.ee_quat
+        obs_dict["ee_linvel"] = self.robot_state_manager.ee_linvel
+        obs_dict["ee_angvel"] = self.robot_state_manager.ee_angvel
+        # obs_dict["force_threshold"] = 
+        obs_dict["ft_force"] = self.ft_sensor.async_read()["force"]
+        # obs_dict["prev_actions"] = 
 
-        # for cam_key, cam in self.cameras.items():
-        #     obs_dict[cam_key] = cam.async_read()
+        return obs_dict
+    
+    def get_vla_observation(self) -> Dict[str, Any]:
+        if not self.is_connected:
+            raise ConnectionError(f"{self.name} is not connected.")
+        
+        obs_dict = {}
+        for cam_key, cam in self.cameras.items():
+            obs_dict[f"video.{cam_key}_view"] = cam.async_read(timeout_ms=1000)
 
+        obs_dict["state.eef_position"] = self.robot_state_manager.ee_pos
+        obs_dict["state.eef_quaternion"] = self.robot_state_manager.ee_quat
+        obs_dict["state.gripper_qpos"] = np.array([
+            self.robot_state_manager.joint_states["position"][7], self.robot_state_manager.joint_states["position"][7]
+        ])
+        
         return obs_dict
 
     def send_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
 
-        # Goal이 수락되지 않았으면 명령을 쏘지 않음
         if not self._goal_accepted:
             self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
             return action
@@ -183,8 +212,10 @@ class FR3Robot(Robot):
         if not self.is_connected:
             return
 
-        # for cam in self.cameras.values():
-        #     cam.disconnect()
+        for cam in self.cameras.values():
+            cam.disconnect()
+
+        self.ft_sensor.disconnect()
 
         # 제어 안전 종료: 활성화된 Goal이 있다면 Cancel 요청 전송
         if self._goal_handle is not None and self._goal_accepted:
@@ -208,14 +239,39 @@ class FR3Robot(Robot):
         print(f"[{self.name}] Disconnected.")
 
     @property
-    def observation_features(self) -> dict[str, type | tuple]:
-        features = {"ee_pose": (16,)} 
-        for cam_name, cam_config in self.config.cameras.items():
-            features[cam_name] = (cam_config.height, cam_config.width, 3)
+    def _cameras_ft(self) -> Dict[str, tuple]:
+        return {
+            f"video.{cam}_view": (self.cameras[cam].height, self.cameras[cam].width, 3) for cam in self.cameras
+        }
+
+    @property
+    def observation_features(self) -> dict[str, tuple]:
+        
+        features = {
+            "fingertip_pos": (3,),
+            "fingertip_pos_rel_fixed": (4,),
+            "fingertip_quat": (4,),
+            "ee_linvel": (3,),
+            "ee_angvel": (3,),
+            "force_threshold": (1,),
+            "ft_force": (3,),
+            "prev_actions": (7,)
+        }
+
+        return features
+    
+    @property
+    def vla_observation_features(self) -> dict[str, tuple]:
+        features = {
+            **self._cameras_ft,
+            "state.eef_position": (3,),
+            "state.eef_quaternion": (4,),
+            "state.gripper_qpos": (2,),
+        }
         return features
 
     @property
-    def action_features(self) -> dict[str, type]:
+    def action_features(self) -> dict[str, tuple]:
         return {
             "arm_action": (self.config.arm_action_dim,),
             "gripper_action": (1,)
@@ -223,13 +279,10 @@ class FR3Robot(Robot):
     
     @property
     def is_calibrated(self) -> bool:
-        """ROS 2 및 C++ 서버에서 캘리브레이션/초기화가 이미 완료되었다고 가정합니다."""
         return True
 
     def calibrate(self) -> None:
-        """파이썬 레벨의 캘리브레이션은 불필요하므로 패스합니다."""
         pass
 
     def configure(self) -> None:
-        """파이썬 레벨의 추가 하드웨어 설정은 불필요하므로 패스합니다."""
         pass

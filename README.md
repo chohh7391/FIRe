@@ -5,6 +5,10 @@ conda create -n fire python=3.10
 conda activate fire
 ```
 
+```bash
+git clone --recursive https://github.com/chohh7391/FIRe.git
+```
+
 - install dependencies
 ```bash
 pip install -r requirements.txt
