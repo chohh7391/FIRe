@@ -119,7 +119,6 @@ class FR3Robot(Robot):
         self._send_goal_future = self._action_client.send_goal_async(goal_msg)
         self._send_goal_future.add_done_callback(self._goal_response_callback)
 
-        # Goal이 수락될 때까지 블로킹 대기 (최대 5초)
         timeout = 5.0
         start_time = time.time()
         while time.time() - start_time < timeout:

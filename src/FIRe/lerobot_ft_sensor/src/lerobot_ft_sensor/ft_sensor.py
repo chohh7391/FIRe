@@ -3,15 +3,12 @@ import time
 import logging
 import numpy as np
 import bota_driver
-
 from .configuration_ft_sensor import FTSensorConfig
+
 
 logger = logging.getLogger(__name__)
 
 class FTSensor:
-    """
-    LeRobot 호환 구조로 래핑된 Bota FT Sensor 클래스.
-    """
     def __init__(self, config: FTSensorConfig):
         self.config = config
         
@@ -21,11 +18,9 @@ class FTSensor:
         self.thread = None
         self.stop_event = None
         
-        # LeRobot 스타일 동기화 객체
         self.frame_lock = threading.Lock()
         self.new_data_event = threading.Event()
         
-        # 최신 데이터
         self.latest_force = np.zeros(3, dtype=np.float32)
         self.latest_torque = np.zeros(3, dtype=np.float32)
         self.latest_timestamp = 0.0
@@ -35,7 +30,6 @@ class FTSensor:
         return self._is_connected
 
     def connect(self, warmup: bool = True) -> None:
-        """센서를 초기화하고 백그라운드 스레드를 시작합니다."""
         if self.is_connected:
             logger.warning("[FTSensor] Already connected.")
             return
@@ -68,7 +62,6 @@ class FTSensor:
         time.sleep(0.1)
 
     def _update_loop(self):
-        """센서 주기에 맞춰 블로킹 읽기를 수행하는 백그라운드 루프"""
         while not self.stop_event.is_set():
             try:
                 bota_frame = self.driver.read_frame_blocking()
@@ -85,7 +78,6 @@ class FTSensor:
                 pass
 
     def async_read(self, timeout_ms: float = None) -> dict:
-        """새로운 센서 데이터가 수신될 때까지 대기한 후 반환 (동기화용)"""
         if not self.is_connected:
             raise ConnectionError("FTSensor is not connected.")
 
@@ -104,7 +96,6 @@ class FTSensor:
         return data
 
     def read_latest(self, max_age_ms: int = 50) -> dict:
-        """대기 없이 버퍼의 최신 센서 데이터를 즉시 반환 (고속 제어 루프용)"""
         if not self.is_connected:
             raise ConnectionError("FTSensor is not connected.")
 
@@ -124,7 +115,6 @@ class FTSensor:
         }
 
     def disconnect(self) -> None:
-        """센서와 스레드를 안전하게 종료합니다."""
         if not self.is_connected:
             return
 
