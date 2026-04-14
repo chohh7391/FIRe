@@ -92,6 +92,14 @@ def main():
 
             # --- A. 로봇으로부터 실제 관측값(Observation) 가져오기 ---
             obs_dict = robot.get_observation()
+            print("=========== observation ===========")
+            for obs_key, obs_value in obs_dict.items():
+                print(f"{obs_key}: {obs_value.shape}")
+
+            vla_obs_dict = robot.get_vla_observation()
+            print("=========== vla observation ===========")
+            for obs_key, obs_value in vla_obs_dict.items():
+                print(f"{obs_key}: {obs_value.shape}")
 
             # TODO: obs_dict 데이터를 모델 입력 규격에 맞게 매핑
             obs_tensor = torch.randn(1, args.obs_dim, device=device)
