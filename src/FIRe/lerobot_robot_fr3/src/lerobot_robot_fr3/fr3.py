@@ -197,7 +197,7 @@ class FR3Robot(Robot):
         # 헤더 시간 및 프레임 명시 (Tester 참고)
         msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
         msg.action_space = self.config.action_space
-        msg.relative = self.config.is_relative
+        msg.relative = False
         msg.rotation_type = self.config.rotation_type
         msg.chunk_size = chunk_size
         
