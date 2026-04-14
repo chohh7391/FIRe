@@ -36,6 +36,7 @@ python scripts/run_vision_server.py
 
 - test robot
 ```bash
+source ~/ros2_ws/install/setup.bash
 conda activate fire
 python test/test_lerobot_robot_fr3.py
 ```
