@@ -22,7 +22,7 @@ export HUGGING_FACE_HUB_TOKEN="YOUR_TOKEN"
 
 # How to run
 
-- ros2 based controller (https://github.com/chohh7391/cho_robot_project)
+- install ros2 based controller (https://github.com/chohh7391/cho_robot_project)
 ```bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py vla:=true control_mode:=torque
