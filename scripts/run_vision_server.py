@@ -2,14 +2,21 @@ from vision_server import VisionServer
 import argparse
 import os
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> c52de8b1c84f44ad782f84903128dca5ef979baa
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Vision Server with optional SAM3 Masking.")
     parser.add_argument("--use-sam3", action="store_true", help="Enable SAM3 masking on the camera streams.")
     args = parser.parse_args()
 
     # HuggingFace 토큰 설정 (SAM3 가중치 다운로드 용도)
+<<<<<<< HEAD
     hf_token = os.environ.get("HF_TOKEN")
+=======
+    hf_token = <YOUR_TOKEN>
+>>>>>>> c52de8b1c84f44ad782f84903128dca5ef979baa
     if hf_token:
         os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
 
