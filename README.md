@@ -20,9 +20,11 @@ pip install -e src/FIRe/vision_server
 export HUGGING_FACE_HUB_TOKEN="YOUR_TOKEN"
 ```
 
+- install ros2 based controller: (https://github.com/chohh7391/cho_robot_project)
+
 # How to run
 
-- install ros2 based controller (https://github.com/chohh7391/cho_robot_project)
+- bringup vla controller
 ```bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py vla:=true control_mode:=torque
