@@ -62,7 +62,8 @@ ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py vla:=true control_
 
 # run vision server
 conda activate sam3
-python scripts/run_vision_server.py
+# change target_object for your need
+python scripts/run_vision_server.py --use_sam3 --target_object wristwatch
 
 # run task manager for specific task
 source ~/ros2_ws/install/setup.bash
@@ -76,4 +77,8 @@ python scripts/play.py \
 --obs_dim 19 \
 --action_dim 6 \
 --device cuda:0
+
+# success feedback using gui
+source ~/ros2_ws/install/setup.bash
+python3 ~/ros2_ws/src/cho_robot_project/cho_task_manager/python/vla_success_gui.py
 ```

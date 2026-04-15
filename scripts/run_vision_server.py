@@ -5,7 +5,8 @@ import os
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the Vision Server with optional SAM3 Masking.")
-    parser.add_argument("--use-sam3", action="store_true", help="Enable SAM3 masking on the camera streams.")
+    parser.add_argument("--use_sam3", action="store_true", help="Enable SAM3 masking on the camera streams.")
+    parser.add_argument("--target_object", type=str, default="peg")
     args = parser.parse_args()
 
     # HuggingFace 토큰 설정 (SAM3 가중치 다운로드 용도)
@@ -18,11 +19,13 @@ if __name__ == "__main__":
         "left":  "16FB99DF",
         "right": "2F1C99DF"
     }
+
+    target_object = args.target_object
     
     PROMPTS = {
-        "wrist": "wristwatch",
-        "left":  "wristwatch",
-        "right": "wristwatch"
+        "wrist": target_object,
+        "left":  target_object,
+        "right": target_object
     }
 
     server = VisionServer(
