@@ -53,3 +53,27 @@ python scripts/play.py \
 --action_dim 6 \
 --device cuda:0
 ```
+
+- for specific task
+```bash
+# bringup robot
+source ~/ros2_ws/install/setup.bash
+ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py vla:=true control_mode:=torque
+
+# run vision server
+conda activate sam3
+python scripts/run_vision_server.py
+
+# run task manager for specific task
+source ~/ros2_ws/install/setup.bash
+ros2 launch cho_task_manager run_task_manager.launch.py task:=forge
+
+# run model when VLACompletionWaiterBehavior is running
+source ~/ros2_ws/install/setup.bash
+python scripts/play.py \
+--checkpoint checkpoints/Factory/test/nn/Factory.pth \
+--cfg scripts/configs/rl_games_ppo_cfg.yaml \
+--obs_dim 19 \
+--action_dim 6 \
+--device cuda:0
+```

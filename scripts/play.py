@@ -76,7 +76,7 @@ def main():
             # arm_action[0] = 0.1
             
             # action_6: Gripper Action (1-DoF)
-            gripper_action = [1.0]
+            gripper_action = [-1.0]
 
             # --- B. C++ 액션 서버로 전송 ---
             action_dict = {

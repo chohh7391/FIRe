@@ -9,6 +9,7 @@ from rclpy.action import ActionClient
 from std_msgs.msg import Header, Float64MultiArray
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
+from std_srvs.srv import Trigger
 
 try:
     from cho_interfaces.action import VisionLanguageAction
@@ -215,6 +216,28 @@ class FR3Robot(Robot):
             cam.disconnect()
 
         self.ft_sensor.disconnect()
+
+        print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
+        trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')
+        
+        # 서비스가 준비되었는지 짧게 대기
+        if trigger_client.wait_for_service(timeout_sec=2.0):
+            req = Trigger.Request()
+            future = trigger_client.call_async(req)
+            
+            # 비동기 완료 대기 (최대 1초)
+            t0 = time.time()
+            while not future.done() and time.time() - t0 < 1.0:
+                time.sleep(0.1)
+                
+            if future.done():
+                try:
+                    response = future.result()
+                    print(f"[{self.name}] Trigger Response: {response.success} - {response.message}")
+                except Exception as e:
+                    print(f"[{self.name}] Failed to get response from Trigger service: {e}")
+        else:
+            print(f"[{self.name}] Warning: /vla/trigger_success service is not available.")
 
         # 제어 안전 종료: 활성화된 Goal이 있다면 Cancel 요청 전송
         if self._goal_handle is not None and self._goal_accepted:
