@@ -69,8 +69,8 @@ python scripts/run_vision_server.py --use_sam3 --target_object wristwatch
 source ~/ros2_ws/install/setup.bash
 ros2 launch cho_task_manager run_task_manager.launch.py task:=forge
 
-# run model when VLACompletionWaiterBehavior is running
-source ~/ros2_ws/install/setup.bash
+# # run model when VLACompletionWaiterBehavior is running
+# source ~/ros2_ws/install/setup.bash
 # python scripts/play.py \
 # --checkpoint checkpoints/Factory/test/nn/Factory.pth \
 # --cfg scripts/configs/rl_games_ppo_cfg.yaml \
