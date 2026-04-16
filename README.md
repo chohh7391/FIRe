@@ -69,14 +69,19 @@ python scripts/run_vision_server.py --use_sam3 --target_object wristwatch
 source ~/ros2_ws/install/setup.bash
 ros2 launch cho_task_manager run_task_manager.launch.py task:=forge
 
+# # run model when VLACompletionWaiterBehavior is running
+# source ~/ros2_ws/install/setup.bash
+# python scripts/play.py \
+# --checkpoint checkpoints/Factory/test/nn/Factory.pth \
+# --cfg scripts/configs/rl_games_ppo_cfg.yaml \
+# --obs_dim 19 \
+# --action_dim 6 \
+# --device cuda:0
+
 # run model when VLACompletionWaiterBehavior is running
 source ~/ros2_ws/install/setup.bash
 python scripts/play.py \
---checkpoint checkpoints/Factory/test/nn/Factory.pth \
---cfg scripts/configs/rl_games_ppo_cfg.yaml \
---obs_dim 19 \
---action_dim 6 \
---device cuda:0
+--csv_path /home/home/FIRe/scripts/configs/traj_save.csv --hz 15.0
 
 # success feedback using gui
 source ~/ros2_ws/install/setup.bash
