@@ -11,7 +11,9 @@ dependencies = [
     # ROS 2 (rclpy)는 시스템에 설치된 것을 사용하므로 여기에 적지 않습니다.
     "lerobot",
     "numpy",
-    "bota-driver"
+    "bota-driver",
+    "scipy",
+    # "pinocchio"
 ]
 
 [tool.setuptools]

@@ -36,6 +36,11 @@ def main():
             for obs_key, obs_value in vla_obs_dict.items():
                 print(f"{obs_key}: {obs_value.shape}")
 
+            print(f"ee_pos: {obs_dict['fingertip_pos']}")
+            print(f"ee_quat: {obs_dict['fingertip_quat']}")
+            print(f"ee_linvel: {obs_dict['ee_linvel']}")
+            print(f"ee_angvel: {obs_dict['ee_angvel']}")
+
             # 2. 시각화 패널 생성 (제공해주신 뷰어 로직 활용)
             panels = []
             cam_keys = ["wrist", "left", "right"]
@@ -68,8 +73,8 @@ def main():
 
             # 4. 로봇 제어 명령 전송 (Random Action 예시)
             action_dict = {
-                "arm_action": np.random.random((6,)),
-                "gripper_action": np.random.random((1,)),
+                "arm_actions": np.random.random((6,)),
+                "gripper_actions": np.random.random((1,)),
             }
             robot.send_action(action_dict)
 

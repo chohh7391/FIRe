@@ -80,8 +80,8 @@ def main():
 
             # --- B. C++ 액션 서버로 전송 ---
             action_dict = {
-                "arm_action": np.array([arm_action], dtype=np.float32),
-                "gripper_action": np.array(gripper_action, dtype=np.float32)
+                "arm_actions": np.array([arm_action], dtype=np.float32),
+                "gripper_actions": np.array(gripper_action, dtype=np.float32)
             }
             robot.send_action(action_dict)
             
