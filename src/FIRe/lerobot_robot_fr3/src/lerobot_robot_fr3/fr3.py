@@ -115,7 +115,7 @@ class FR3Robot(Robot):
         """Action Server에 제어 권한(Goal)을 요청합니다."""
         goal_msg = VisionLanguageAction.Goal()
         goal_msg.model_name = self.config.model_name
-        goal_msg.control_mode = self.config.control_mode
+        goal_msg.inference_frequency = self.config.inference_frequency
 
         self._send_goal_future = self._action_client.send_goal_async(goal_msg)
         self._send_goal_future.add_done_callback(self._goal_response_callback)
@@ -156,7 +156,7 @@ class FR3Robot(Robot):
         # TODO: change ee_pos, ee_quat to fingertip frame and so on
         obs_dict = {}
         obs_dict["fingertip_pos"] = self.robot_state_manager.ee_pos
-        # obs_dict["fingertip_pos_rel_fixed"] = self.robot_state_manager.ee_pos - object_pos
+        obs_dict["fingertip_pos_rel_fixed"] = self.robot_state_manager.ee_pos - np.array([0.6, 0.0, 0.05])
         obs_dict["fingertip_quat"] = self.robot_state_manager.ee_quat
         obs_dict["ee_linvel"] = self.robot_state_manager.ee_linvel
         obs_dict["ee_angvel"] = self.robot_state_manager.ee_angvel
@@ -190,8 +190,8 @@ class FR3Robot(Robot):
             self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
             return action
 
-        arm_action_np = np.array(action["arm_action"]).reshape(-1)
-        gripper_action_np = np.array(action.get("gripper_action", [])).reshape(-1)
+        arm_action_np = np.array(action["arm_actions"]).reshape(-1)
+        gripper_action_np = np.array(action.get("gripper_actions", [])).reshape(-1)
         chunk_size = len(arm_action_np) // self.config.arm_action_dim
 
         msg = ActionChunk()
@@ -202,8 +202,8 @@ class FR3Robot(Robot):
         msg.rotation_type = self.config.rotation_type
         msg.chunk_size = chunk_size
         
-        msg.arm_action = arm_action_np.tolist()
-        msg.gripper_action = gripper_action_np.tolist()
+        msg.arm_actions = arm_action_np.tolist()
+        msg.gripper_actions = gripper_action_np.tolist()
 
         self.pub_action_chunk.publish(msg)
         return action
@@ -295,8 +295,8 @@ class FR3Robot(Robot):
     @property
     def action_features(self) -> dict[str, tuple]:
         return {
-            "arm_action": (self.config.arm_action_dim,),
-            "gripper_action": (1,)
+            "arm_actions": (self.config.arm_action_dim,),
+            "gripper_actions": (1,)
         }
     
     @property

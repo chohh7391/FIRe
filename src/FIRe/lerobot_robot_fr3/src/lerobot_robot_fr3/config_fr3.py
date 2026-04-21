@@ -20,10 +20,10 @@ class FR3RobotConfig(RobotConfig):
     
     # --- VLA Action Goal 설정 ---
     model_name: str = "lerobot_vla_policy"
-    control_mode: str = "effort"  # C++ 서버 환경에 맞게 "effort" 또는 "position"
-    action_space: str = "task"    # Task space 제어
+    inference_frequency: float = 15.0
     
     # --- VLA Chunk 설정 ---
+    action_space: str = "task"    # Task space 제어
     is_relative: bool = False
     rotation_type: str = "axis_angle"  # "axis_angle", "euler", "quaternion", "rotation6d"
     arm_action_dim: int = 6
