@@ -1,105 +1,221 @@
-import time
 import argparse
+import time
+import torch
+import yaml
 import numpy as np
-import pandas as pd
+import cv2
 
-# [2] 우리가 만든 로봇 통신 라이브러리
+from rl_games.common import env_configurations, vecenv
+from rl_games.torch_runner import Runner
+from rl_games.common.player import BasePlayer
+
 from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
 from lerobot_robot_fr3.fr3 import FR3Robot
 
+
+OBS_KEYS_AND_DIM = [
+    # ("fingertip_pos",           3),
+    ("fingertip_pos_rel_fixed", 3),
+    ("fingertip_quat",          4),
+    ("ee_linvel",               3),
+    ("ee_angvel",               3),
+    ("prev_actions",            6),
+]
+
+def build_obs_tensor(obs_dict: dict, obs_dim: int, device: torch.device) -> torch.Tensor:
+    """
+    robot.get_observation() dict → policy input tensor (1, obs_dim)
+    처음 실행 시 key 불일치 에러 메시지로 수정 방향 확인 가능.
+    """
+    parts = []
+    for key, expected_dim in OBS_KEYS_AND_DIM:
+        if key not in obs_dict:
+            raise KeyError(
+                f"[OBS] '{key}' not in obs_dict.\n"
+                f"  Available: {list(obs_dict.keys())}\n"
+                f"  → OBS_KEYS_AND_DIM 수정 필요"
+            )
+        val = obs_dict[key]
+        if isinstance(val, np.ndarray):
+            val = torch.from_numpy(val).float()
+        val = val.flatten()
+
+        if val.shape[0] != expected_dim:
+            raise ValueError(
+                f"[OBS] '{key}': expected {expected_dim}D, got {val.shape[0]}D"
+            )
+        parts.append(val)
+
+    obs_vec = torch.cat(parts)
+
+    if obs_vec.shape[0] != obs_dim:
+        raise ValueError(
+            f"[OBS] Total dim mismatch: built {obs_vec.shape[0]}, expected {obs_dim}\n"
+            f"  → OBS_KEYS_AND_DIM 항목 추가/수정 필요"
+        )
+
+    return obs_vec.unsqueeze(0).to(device)   # (1, obs_dim)
+
+
 def parse_args():
-    parser = argparse.ArgumentParser(description="Replay actions from CSV on Real Robot (Franka)")
-    parser.add_argument("--csv_path", type=str, required=True, help="Path to the dataset CSV file")
-    parser.add_argument("--hz", type=float, default=12.0, help="Control loop rate (Hz)")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--checkpoint", type=str, required=True)
+    parser.add_argument("--cfg",        type=str, required=True)
+    parser.add_argument("--obs_dim",    type=int, default=19,
+                        help="env.yaml: observation_space=21")
+    parser.add_argument("--action_dim", type=int, default=6,
+                        help="env.yaml: action_space=6 (gripper는 policy 외부 제어)")
+    parser.add_argument("--device",     type=str, default="cuda:0")
+    parser.add_argument("--control_hz", type=float, default=15.0,
+                        help="dt=0.00833 x decimation=8 ≈ 15 Hz")
+    parser.add_argument("--visualize",  action="store_true", default=False)
     return parser.parse_args()
+
 
 def main():
     args = parse_args()
-    
-    # =================================================================
-    # 1. CSV 데이터 로드
-    # =================================================================
-    print(f"[INFO] Loading CSV data from: {args.csv_path}")
-    try:
-        df = pd.read_csv(args.csv_path)
-    except Exception as e:
-        print(f"[ERROR] Failed to read CSV: {e}")
-        return
-
-    # 필수 컬럼(action_0 ~ action_6)이 있는지 검증
-    action_cols = [f"action_{i}" for i in range(6)]
-    if not all(col in df.columns for col in action_cols):
-        print(f"[ERROR] CSV file must contain columns: {action_cols}")
-        return
+    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
+    print(f"[INFO] Using device: {device}")
 
     # =================================================================
-    # 2. 로봇 (ROS 2) 초기화
+    # 1. RL 모델 로드
+    # =================================================================
+    with open(args.cfg, "r") as f:
+        agent_cfg = yaml.safe_load(f)
+
+    agent_cfg["params"]["load_checkpoint"]      = True
+    agent_cfg["params"]["load_path"]            = args.checkpoint
+    agent_cfg["params"]["config"]["device"]     = str(device)
+    agent_cfg["params"]["config"]["num_actors"] = 1
+
+    class DummyEnv:
+        def __init__(self):
+            self.observation_space = type("S", (), {"shape": (args.obs_dim,)})()
+            self.action_space      = type("S", (), {
+                "shape": (args.action_dim,),
+                "high":  np.ones(args.action_dim, dtype=np.float32),
+                "low":  -np.ones(args.action_dim, dtype=np.float32),
+            })()
+            self.num_envs = 1
+        def reset(self):
+            return torch.zeros(1, args.obs_dim, device=device)
+        def step(self, actions):
+            return torch.zeros(1, args.obs_dim, device=device), torch.zeros(1), torch.zeros(1, dtype=torch.bool), {}
+
+    dummy_env = DummyEnv()
+    vecenv.register("IsaacRlgWrapper", lambda config_name, num_actors, **kwargs: dummy_env)
+    env_configurations.register("rlgpu", {"vecenv_type": "IsaacRlgWrapper", "env_creator": lambda **kwargs: dummy_env})
+
+    runner = Runner()
+    runner.load(agent_cfg)
+    agent: BasePlayer = runner.create_player()
+    agent.restore(args.checkpoint)
+    agent.reset()
+
+    if agent.is_rnn:
+        agent.init_rnn()
+        print("[INFO] LSTM states initialized.")
+
+    print("[INFO] RL Model Loaded Successfully.")
+
+    # =================================================================
+    # 2. 로봇 연결
     # =================================================================
     print("[INFO] Connecting to Robot...")
-    
-    # 설정: 상대 제어(Velocity/Delta), axis_angle, 6자유도 액션
-    config = FR3RobotConfig(is_relative=True, rotation_type="axis_angle", arm_action_dim=6)
-    robot = FR3Robot(config)
-    robot.connect()
+    config = FR3RobotConfig(is_relative=False, rotation_type="quaternion", arm_action_dim=6)
+    robot  = FR3Robot(config)
+
+    try:
+        robot.connect()
+    except Exception as e:
+        print(f"[ERROR] Connection failed: {e}")
+        return
 
     if not robot.is_connected:
         print("[ERROR] Failed to connect to robot.")
         return
 
-    # =================================================================
-    # 3. CSV 데이터 기반 제어 루프
-    # =================================================================
-    sleep_time = 1.0 / args.hz
-    total_steps = len(df)
+    # 실제 obs key 확인용 (최초 1회)
+    print("[DEBUG] Checking robot.get_observation() keys...")
+    _obs_dict = robot.get_observation()
+    for k, v in _obs_dict.items():
+        print(f"  {k}: shape={np.array(v).shape}")
 
-    print(f"\n🚀 [INFO] Starting CSV Playback! (Total Steps: {total_steps}, Rate: {args.hz} Hz)")
-    print("   - Press Ctrl+C to stop.")
+    # =================================================================
+    # 3. Control Loop
+    # =================================================================
+    dt = 1.0 / args.control_hz
+    print(f"\n[INFO] Starting control loop at {args.control_hz} Hz. Ctrl+C or 'q' to stop.")
 
     try:
-        # iterrows()를 사용하여 한 줄씩 읽어서 실행
-        for index, row in df.iterrows():
+        while True:
             t_start = time.time()
 
-            # --- A. CSV에서 Action 값 추출 ---
-            # action_0 ~ action_5: Arm Action (6-DoF)
-            arm_action = np.array([
-                row["action_0"],
-                row["action_1"],
-                row["action_2"] + 0.1, 
-                row["action_3"],
-                row["action_4"],
-                row["action_5"]
-            ], dtype=np.float32)
+            # --- A. Observation ---
+            obs_dict     = robot.get_observation()
+            vla_obs_dict = robot.get_vla_observation() if args.visualize else {}
 
-            # # test
-            # arm_action[:] = 0.0
-            # arm_action[0] = 0.1
-            
-            # action_6: Gripper Action (1-DoF)
-            gripper_action = [-1.0]
+            # --- B. Obs → tensor ---
+            obs_tensor = build_obs_tensor(obs_dict, args.obs_dim, device)
 
-            # --- B. C++ 액션 서버로 전송 ---
+            # --- C. RL Inference ---
+            with torch.inference_mode():
+                obs_t     = agent.obs_to_torch(obs_tensor)
+                rl_action = agent.get_action(obs_t, is_deterministic=True)
+                # clip_actions=1.0은 agent 내부에서 처리됨
+
+            arm_action_np = rl_action.cpu().numpy().flatten()[:6]  # (6,) delta EE pose
+
+            # --- D. Action 전송 ---
+            # gripper: task logic에 따라 조정 (현재는 열린 상태 고정)
             action_dict = {
-                "arm_actions": np.array([arm_action], dtype=np.float32),
-                "gripper_actions": np.array(gripper_action, dtype=np.float32)
+                "arm_actions":     arm_action_np,
+                "gripper_actions": np.array([0.0], dtype=np.float32),
             }
             robot.send_action(action_dict)
-            
-            # 진행 상태 출력 (매 50 스텝마다)
-            if index % 50 == 0:
-                print(f"[INFO] Playing step {index}/{total_steps} ...")
 
-            # --- C. 제어 주기 (Hz) 맞추기 ---
-            elapsed_loop = time.time() - t_start
-            time.sleep(max(0.0, sleep_time - elapsed_loop))
+            # --- E. 카메라 시각화 ---
+            if args.visualize:
+                panels = []
+                for key in ["wrist", "left", "right"]:
+                    obs_key = f"video.{key}_view"
+                    if obs_key in vla_obs_dict:
+                        frame = vla_obs_dict[obs_key]
+                        if frame.ndim == 4:
+                            frame = frame[0]
+                        bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        label = key
+                    else:
+                        bgr   = np.zeros((config.cameras[key].height,
+                                          config.cameras[key].width, 3), dtype=np.uint8)
+                        label = f"{key} (no frame)"
+                    cv2.putText(bgr, label, (10, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
+                    panels.append(bgr)
 
-        print("\n[INFO] 🏁 CSV Playback Finished successfully!")
+                cv2.imshow("FR3 Multi-Camera Viewer", np.hstack(panels))
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    print("[INFO] 'q' pressed. Exiting.")
+                    break
+
+            # --- F. 주기 유지 ---
+            elapsed = time.time() - t_start
+            sleep_t = dt - elapsed
+            if sleep_t > 0:
+                time.sleep(sleep_t)
+            elif elapsed > dt * 1.1:
+                print(f"[WARN] Loop overrun: {elapsed*1000:.1f} ms > {dt*1000:.1f} ms")
 
     except KeyboardInterrupt:
-        print("\n[INFO] Stopped by User.")
+        print("\n[INFO] Stopped by user.")
+    except Exception as e:
+        print(f"\n[ERROR] {e}")
+        raise
     finally:
+        cv2.destroyAllWindows()
         robot.disconnect()
-        print("[INFO] Robot Disconnected Safely.")
+        print("[INFO] Robot disconnected safely.")
+
 
 if __name__ == "__main__":
     main()
