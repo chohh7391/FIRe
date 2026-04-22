@@ -26,6 +26,13 @@ from .config_fr3 import FR3RobotConfig
 from .utils import RobotStateManager
 from lerobot_ft_sensor.configuration_ft_sensor import FTSensorConfig
 from lerobot_ft_sensor.ft_sensor import FTSensor
+from .utils.math_utils import (
+    quat_from_angle_axis,
+    quat_mul,
+    get_euler_xyz,
+    quat_from_euler_xyz,
+)
+
 
 
 class FR3Robot(Robot):
@@ -50,6 +57,8 @@ class FR3Robot(Robot):
         # update robot state & can get robot state from this
         self.robot_state_manager = None
         self.camera_state_manager = None
+
+        self.prev_actions = None
 
     @property
     def is_connected(self) -> bool:
@@ -152,17 +161,42 @@ class FR3Robot(Robot):
     def get_observation(self) -> Dict[str, Any]:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
+        
+        contact_lower, contact_upper = [5.0, 10.0]
+        contact_rand = np.random.rand()
+        contact_penalty_thresholds = np.array([
+            contact_lower + contact_rand * (contact_upper - contact_lower)
+        ])
+
+
+        height, base_height = 0.025, 0.0  # hole
+        # height, base_height = 0.02, 0.005  # gear
+        # height, base_height = 0.025, 0.01  # bolt
+        
+        fixed_tip_pos_local = np.zeros(3, dtype=np.float32)
+        fixed_tip_pos_local[2] += (height + base_height)
+        # if task == "gear_mesh":
+        #     fixed_tip_pos_local[0] = medium_gear_base_offset[0]
+
+        fixed_pos = np.array([0.6, 0.0, 0.05])
+        fixed_quat = np.array([1.0, 0.0, 0.0, 0.0])
+
+        fixed_tip_pos = fixed_pos + fixed_tip_pos_local
+        self.fixed_pos_obs_frame = fixed_tip_pos
 
         # TODO: change ee_pos, ee_quat to fingertip frame and so on
         obs_dict = {}
-        obs_dict["fingertip_pos"] = self.robot_state_manager.ee_pos
-        obs_dict["fingertip_pos_rel_fixed"] = self.robot_state_manager.ee_pos - np.array([0.6, 0.0, 0.05])
+        # obs_dict["fingertip_pos"] = self.robot_state_manager.ee_pos
+        obs_dict["fingertip_pos_rel_fixed"] = self.robot_state_manager.ee_pos - self.fixed_pos_obs_frame
         obs_dict["fingertip_quat"] = self.robot_state_manager.ee_quat
         obs_dict["ee_linvel"] = self.robot_state_manager.ee_linvel
         obs_dict["ee_angvel"] = self.robot_state_manager.ee_angvel
-        # obs_dict["force_threshold"] = 
+        obs_dict["force_threshold"] = contact_penalty_thresholds
         obs_dict["ft_force"] = self.ft_sensor.async_read()["force"]
-        # obs_dict["prev_actions"] = 
+        if self.prev_actions is not None:
+            obs_dict["prev_actions"] = self.prev_actions
+        else:
+            obs_dict["prev_actions"] = np.zeros((7,), dtype=np.float32)
 
         return obs_dict
     
@@ -182,6 +216,37 @@ class FR3Robot(Robot):
         
         return obs_dict
 
+    # def send_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    #     if not self.is_connected:
+    #         raise ConnectionError(f"{self.name} is not connected.")
+
+    #     if not self._goal_accepted:
+    #         self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
+    #         return action
+        
+    #     # processed_arm_action = self._process_action(action["arm_actions"])
+
+    #     # arm_action_np = np.array(processed_arm_action).reshape(-1)
+    #     arm_action_np = np.array([action["arm_actions"]], dtype=np.float32)
+    #     gripper_action_np = np.array(action.get("gripper_actions", [])).reshape(-1)
+    #     chunk_size = len(arm_action_np) // self.config.arm_action_dim
+
+    #     msg = ActionChunk()
+    #     # 헤더 시간 및 프레임 명시 (Tester 참고)
+    #     msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
+    #     msg.action_space = self.config.action_space
+    #     msg.relative = self.config.is_relative
+    #     msg.rotation_type = self.config.rotation_type
+    #     msg.chunk_size = chunk_size
+        
+    #     msg.arm_actions = arm_action_np.tolist()
+    #     msg.gripper_actions = gripper_action_np.tolist()
+
+    #     self.pub_action_chunk.publish(msg)
+
+    #     self.prev_actions = action["arm_actions"] # np.concatenate([arm_action_np, gripper_action_np])
+    #     return action
+    
     def send_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
@@ -206,6 +271,9 @@ class FR3Robot(Robot):
         msg.gripper_actions = gripper_action_np.tolist()
 
         self.pub_action_chunk.publish(msg)
+
+        # self.prev_actions = action["arm_actions"] + success_prediction
+        
         return action
 
     def disconnect(self) -> None:
@@ -270,13 +338,14 @@ class FR3Robot(Robot):
     def observation_features(self) -> dict[str, tuple]:
         
         features = {
-            "fingertip_pos": (3,),
-            "fingertip_pos_rel_fixed": (4,),
+            # "fingertip_pos": (3,),
+            "fingertip_pos_rel_fixed": (3,),
             "fingertip_quat": (4,),
             "ee_linvel": (3,),
             "ee_angvel": (3,),
             "force_threshold": (1,),
             "ft_force": (3,),
+            # "prev_actions": (6,),
             "prev_actions": (7,)
         }
 
@@ -308,3 +377,38 @@ class FR3Robot(Robot):
 
     def configure(self) -> None:
         pass
+
+    def _process_action(self, raw_action):
+        pos_action = raw_action[0:3] * np.array([0.02, 0.02, 0.02])
+        rot_action = raw_action[3:6]
+
+        # if task == "nut_thread":
+        #     rot_action[2] = -(rot_action[2] + 1.0) * 0.5  # [-1, 0]
+        rot_action = rot_action * np.array([0.097, 0.097, 0.097])
+
+        ctrl_target_pos = self.robot_state_manager.ee_pos + pos_action
+        delta_pos = ctrl_target_pos - self.fixed_pos_obs_frame
+        pos_error_clipped = np.clip(
+            delta_pos, -0.05, 0.05
+        )
+        ctrl_target_pos = self.fixed_pos_obs_frame + pos_error_clipped
+
+        angle = np.linalg.norm(rot_action)
+        axis = rot_action / angle
+
+        rot_action_quat = quat_from_angle_axis(angle, axis)
+        rot_action_quat = np.where(
+            angle > 1e-6, rot_action_quat, np.array([1.0, 0.0, 0.0, 0.0])
+        )
+        ctrl_target_quat = quat_mul(rot_action_quat, self.robot_state_manager.ee_quat)
+
+        target_euler_xyz = get_euler_xyz(ctrl_target_quat)
+        target_euler_xyz[0] = np.pi  # Restrict actions to be upright.
+        target_euler_xyz[1] = 0.0
+
+        ctrl_target_quat = quat_from_euler_xyz(
+            roll=target_euler_xyz[0], pitch=target_euler_xyz[1], yaw=target_euler_xyz[2]
+        )
+
+        return np.concatenate([ctrl_target_pos, ctrl_target_quat])
+

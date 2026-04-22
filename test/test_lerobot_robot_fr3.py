@@ -7,7 +7,7 @@ from lerobot_robot_fr3.fr3 import FR3Robot
 def main():
     print("[INFO] Connecting to Robot...")
     # 시각화를 위해 arm_action_dim 등 설정 유지
-    config = FR3RobotConfig(is_relative=True, rotation_type="axis_angle", arm_action_dim=6)
+    config = FR3RobotConfig(is_relative=False, rotation_type="quaternion", arm_action_dim=7)
     robot = FR3Robot(config)
     
     try:
@@ -35,11 +35,6 @@ def main():
             print("=========== vla observation ===========")
             for obs_key, obs_value in vla_obs_dict.items():
                 print(f"{obs_key}: {obs_value.shape}")
-
-            print(f"ee_pos: {obs_dict['fingertip_pos']}")
-            print(f"ee_quat: {obs_dict['fingertip_quat']}")
-            print(f"ee_linvel: {obs_dict['ee_linvel']}")
-            print(f"ee_angvel: {obs_dict['ee_angvel']}")
 
             # 2. 시각화 패널 생성 (제공해주신 뷰어 로직 활용)
             panels = []
