@@ -55,6 +55,7 @@ def main():
     # 2. 로봇 연결
     # =================================================================
     print("[INFO] Connecting to Robot...")
+    # config = FR3RobotConfig(use_sim_time=args.use_sim_time, is_relative=False, rotation_type="axis_angle", arm_action_dim=6)
     config = FR3RobotConfig(use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion", arm_action_dim=7)
     robot  = FR3Robot(config)
     robot.connect()
@@ -98,6 +99,7 @@ def main():
                 row["raw_action_4"],
                 row["raw_action_5"],
             ], dtype=np.float32)
+
             # arm_action_np = np.array([
             #     row["processed_action_0"],
             #     row["processed_action_1"],
@@ -106,6 +108,7 @@ def main():
             #     row["processed_action_4"],
             #     row["processed_action_5"],
             # ], dtype=np.float32)
+
             gripper_action = np.array([-1.0], dtype=np.float32)
 
             action_dict = {
@@ -140,8 +143,8 @@ def main():
             elapsed = time.time() - t_start
             print(f"[INFO] Step {index}/{total_steps}  loop={elapsed*1000:.1f}ms")
 
-            if index == 50:
-                break
+            # if index == 50:
+            #     break
 
         print("\n[INFO] CSV Playback Finished.")
 
