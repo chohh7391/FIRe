@@ -24,8 +24,7 @@ except ImportError:
 from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.robots import Robot
 from .config_fr3 import FR3RobotConfig
-from .utils import RobotStateManager
-from lerobot_ft_sensor.configuration_ft_sensor import FTSensorConfig
+from .utils import RobotStateManager, CameraSensorManager, FTSensorManager
 from lerobot_ft_sensor.ft_sensor import FTSensor
 from .utils.math_utils import (
     quat_from_angle_axis,
@@ -44,8 +43,6 @@ class FR3Robot(Robot):
     def __init__(self, config: FR3RobotConfig):
         super().__init__(config)
         self.config = config
-        self.cameras = make_cameras_from_configs(config.cameras)
-        self.ft_sensor = FTSensor(self.config.ft_sensor)
         
         self.node = None
         self.executor_thread = None
@@ -58,12 +55,26 @@ class FR3Robot(Robot):
         
         # update robot state & can get robot state from this
         self.robot_state_manager = None
-        self.camera_state_manager = None
 
         self.prev_actions = None
         ema_lower, ema_upper = 0.025, 0.1
         ema_rand = np.random.rand()
         self.ema_factor = ema_lower + ema_rand * (ema_upper - ema_lower)
+
+        height, base_height = 0.025, 0.0  # hole
+        # height, base_height = 0.02, 0.005  # gear
+        # height, base_height = 0.025, 0.01  # bolt
+        
+        fixed_tip_pos_local = np.zeros(3, dtype=np.float32)
+        fixed_tip_pos_local[2] += (height + base_height)
+        # if task == "gear_mesh":
+        #     fixed_tip_pos_local[0] = medium_gear_base_offset[0]
+
+        fixed_pos = np.array([0.6, 0.0, 0.05])
+        fixed_quat = np.array([1.0, 0.0, 0.0, 0.0])
+
+        fixed_tip_pos = fixed_pos + fixed_tip_pos_local
+        self.fixed_pos_obs_frame = fixed_tip_pos
 
     @property
     def is_connected(self) -> bool:
@@ -93,6 +104,10 @@ class FR3Robot(Robot):
         self.action_cb_group = ReentrantCallbackGroup()
 
         self.robot_state_manager = RobotStateManager(self.node)
+        self.camera_sensor_manager = CameraSensorManager(self.node, self.config.cameras, fps=30.0)
+        self.ft_sensor_manager = FTSensorManager(
+            node=self.node, config=self.config.ft_sensor
+        )
 
         self.pub_action_chunk = self.node.create_publisher(
             ActionChunk, self.config.action_topic, 10
@@ -128,11 +143,10 @@ class FR3Robot(Robot):
             print("Warning: Did not receive EE pose (TF transform) within timeout.")
 
         # connect to ft sensor
-        self.ft_sensor.connect()
+        self.ft_sensor_manager.connect()
 
         # connect to cameras
-        for cam in self.cameras.values():
-            cam.connect()
+        self.camera_sensor_manager.connect()
 
         self._is_connected = True
         print(f"[{self.name}] VLA Client Connected and Ready!")
@@ -185,22 +199,6 @@ class FR3Robot(Robot):
             contact_lower + contact_rand * (contact_upper - contact_lower)
         ])
 
-
-        height, base_height = 0.025, 0.0  # hole
-        # height, base_height = 0.02, 0.005  # gear
-        # height, base_height = 0.025, 0.01  # bolt
-        
-        fixed_tip_pos_local = np.zeros(3, dtype=np.float32)
-        fixed_tip_pos_local[2] += (height + base_height)
-        # if task == "gear_mesh":
-        #     fixed_tip_pos_local[0] = medium_gear_base_offset[0]
-
-        fixed_pos = np.array([0.6, 0.0, 0.05]) + np.array([-0.00341896, 0.03358, 0.000867025])
-        fixed_quat = np.array([1.0, 0.0, 0.0, 0.0])
-
-        fixed_tip_pos = fixed_pos + fixed_tip_pos_local
-        self.fixed_pos_obs_frame = fixed_tip_pos
-
         if self.prev_actions is not None:
             prev_actions = self.prev_actions.copy()
             prev_actions[3:5] = 0.0
@@ -216,7 +214,7 @@ class FR3Robot(Robot):
         obs_dict["ee_linvel"] = self.robot_state_manager.ee_linvel
         obs_dict["ee_angvel"] = self.robot_state_manager.ee_angvel
         obs_dict["force_threshold"] = contact_penalty_thresholds
-        obs_dict["ft_force"] = self.ft_sensor.async_read()["force"]
+        obs_dict["ft_force"] = self.ft_sensor_manager.force
         obs_dict["prev_actions"] = prev_actions
 
         return obs_dict
@@ -226,8 +224,8 @@ class FR3Robot(Robot):
             raise ConnectionError(f"{self.name} is not connected.")
         
         obs_dict = {}
-        for cam_key, cam in self.cameras.items():
-            obs_dict[f"video.{cam_key}_view"] = cam.async_read(timeout_ms=1000)
+        for cam_key, cam_data in self.camera_sensor_manager.data.items():
+            obs_dict[f"video.{cam_key}_view"] = cam_data
 
         obs_dict["state.eef_position"] = self.robot_state_manager.ee_pos
         obs_dict["state.eef_quaternion"] = self.robot_state_manager.ee_quat
@@ -276,43 +274,13 @@ class FR3Robot(Robot):
 
         self.prev_actions = np.concatenate([action["arm_actions"], action["success_prediction"]])
         return action
-    
-    # def send_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
-    #     if not self.is_connected:
-    #         raise ConnectionError(f"{self.name} is not connected.")
-
-    #     if not self._goal_accepted:
-    #         self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
-    #         return action
-
-    #     arm_action_np = np.array(action["arm_actions"]).reshape(-1)
-    #     gripper_action_np = np.array(action.get("gripper_actions", [])).reshape(-1)
-    #     chunk_size = len(arm_action_np) // self.config.arm_action_dim
-
-    #     msg = ActionChunk()
-    #     msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
-    #     msg.action_space = self.config.action_space
-    #     msg.relative = False
-    #     msg.rotation_type = self.config.rotation_type
-    #     msg.chunk_size = chunk_size
-        
-    #     msg.arm_actions = arm_action_np.tolist()
-    #     msg.gripper_actions = gripper_action_np.tolist()
-
-    #     self.pub_action_chunk.publish(msg)
-
-    #     # self.prev_actions = action["arm_actions"] + success_prediction
-        
-    #     return action
 
     def disconnect(self) -> None:
         if not self.is_connected:
             return
 
-        for cam in self.cameras.values():
-            cam.disconnect()
-
-        self.ft_sensor.disconnect()
+        self.camera_sensor_manager.disconnect()
+        self.ft_sensor_manager.disconnect()
 
         print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
         trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')
@@ -360,7 +328,7 @@ class FR3Robot(Robot):
     @property
     def _cameras_ft(self) -> Dict[str, tuple]:
         return {
-            f"video.{cam}_view": (self.cameras[cam].height, self.cameras[cam].width, 3) for cam in self.cameras
+            f"video.{name}_view": self.camera_sensor_manager.shapes[name] for name in self.camera_sensor_manager.names
         }
 
     @property

@@ -4,6 +4,7 @@ import torch
 import yaml
 import numpy as np
 import cv2
+import pandas as pd
 
 from rl_games.common import env_configurations, vecenv
 from rl_games.torch_runner import Runner
@@ -12,9 +13,7 @@ from rl_games.common.player import BasePlayer
 from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
 from lerobot_robot_fr3.fr3 import FR3Robot
 
-
 OBS_KEYS_AND_DIM = [
-    # ("fingertip_pos", 3),
     ("fingertip_pos_rel_fixed", 3),
     ("fingertip_quat", 4),
     ("ee_linvel", 3),
@@ -25,55 +24,41 @@ OBS_KEYS_AND_DIM = [
 ]
 
 def build_obs_tensor(obs_dict: dict, obs_dim: int, device: torch.device) -> torch.Tensor:
-    """
-    robot.get_observation() dict → policy input tensor (1, obs_dim)
-    처음 실행 시 key 불일치 에러 메시지로 수정 방향 확인 가능.
-    """
     parts = []
     for key, expected_dim in OBS_KEYS_AND_DIM:
         if key not in obs_dict:
-            raise KeyError(
-                f"[OBS] '{key}' not in obs_dict.\n"
-                f"  Available: {list(obs_dict.keys())}\n"
-                f"  → OBS_KEYS_AND_DIM 수정 필요"
-            )
+            raise KeyError(f"[OBS] '{key}' not in obs_dict. Available: {list(obs_dict.keys())}")
+        
         val = obs_dict[key]
         if isinstance(val, np.ndarray):
             val = torch.from_numpy(val).float()
+        elif isinstance(val, (list, float, int)):
+            val = torch.tensor(np.array(val)).float()
+            
         val = val.flatten()
-
         if val.shape[0] != expected_dim:
-            raise ValueError(
-                f"[OBS] '{key}': expected {expected_dim}D, got {val.shape[0]}D"
-            )
+            raise ValueError(f"[OBS] '{key}': expected {expected_dim}D, got {val.shape[0]}D")
         parts.append(val)
 
     obs_vec = torch.cat(parts)
-
     if obs_vec.shape[0] != obs_dim:
-        raise ValueError(
-            f"[OBS] Total dim mismatch: built {obs_vec.shape[0]}, expected {obs_dim}\n"
-            f"  → OBS_KEYS_AND_DIM 항목 추가/수정 필요"
-        )
+        raise ValueError(f"[OBS] Total dim mismatch: built {obs_vec.shape[0]}, expected {obs_dim}")
 
-    return obs_vec.unsqueeze(0).to(device)   # (1, obs_dim)
-
+    return obs_vec.unsqueeze(0).to(device)
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--cfg",        type=str, required=True)
-    parser.add_argument("--obs_dim",    type=int, default=24,
-                        help="env.yaml: observation_space=24")
-    parser.add_argument("--action_dim", type=int, default=7,
-                        help="env.yaml: action_space=7 (arm_action + success prediction)")
+    parser.add_argument("--obs_dim",    type=int, default=24)
+    parser.add_argument("--action_dim", type=int, default=7)
     parser.add_argument("--device",     type=str, default="cuda:0")
-    parser.add_argument("--control_hz", type=float, default=15.0,
-                        help="dt=0.00833 x decimation=8 ≈ 15 Hz")
+    parser.add_argument("--control_hz", type=float, default=15.0)
     parser.add_argument("--visualize",  action="store_true", default=False)
-    parser.add_argument("--use_sim_time", action="store_true", help="Use simulation time")
+    parser.add_argument("--use_sim_time", action="store_true")
+    # 리플레이 인자
+    parser.add_argument("--replay",     type=str, default=None, help="Path to replay CSV file")
     return parser.parse_args()
-
 
 def main():
     args = parse_args()
@@ -86,24 +71,22 @@ def main():
     with open(args.cfg, "r") as f:
         agent_cfg = yaml.safe_load(f)
 
-    agent_cfg["params"]["load_checkpoint"]      = True
-    agent_cfg["params"]["load_path"]            = args.checkpoint
-    agent_cfg["params"]["config"]["device"]     = str(device)
+    agent_cfg["params"]["load_checkpoint"] = True
+    agent_cfg["params"]["load_path"] = args.checkpoint
+    agent_cfg["params"]["config"]["device"] = str(device)
     agent_cfg["params"]["config"]["num_actors"] = 1
 
     class DummyEnv:
         def __init__(self):
             self.observation_space = type("S", (), {"shape": (args.obs_dim,)})()
-            self.action_space      = type("S", (), {
+            self.action_space = type("S", (), {
                 "shape": (args.action_dim,),
-                "high":  np.ones(args.action_dim, dtype=np.float32),
-                "low":  -np.ones(args.action_dim, dtype=np.float32),
+                "high": np.ones(args.action_dim, dtype=np.float32),
+                "low": -np.ones(args.action_dim, dtype=np.float32),
             })()
             self.num_envs = 1
-        def reset(self):
-            return torch.zeros(1, args.obs_dim, device=device)
-        def step(self, actions):
-            return torch.zeros(1, args.obs_dim, device=device), torch.zeros(1), torch.zeros(1, dtype=torch.bool), {}
+        def reset(self): return torch.zeros(1, args.obs_dim, device=device)
+        def step(self, actions): return torch.zeros(1, args.obs_dim, device=device), torch.zeros(1), torch.zeros(1, dtype=torch.bool), {}
 
     dummy_env = DummyEnv()
     vecenv.register("IsaacRlgWrapper", lambda config_name, num_actors, **kwargs: dummy_env)
@@ -114,20 +97,17 @@ def main():
     agent: BasePlayer = runner.create_player()
     agent.restore(args.checkpoint)
     agent.reset()
-
-    if agent.is_rnn:
-        agent.init_rnn()
-        print("[INFO] LSTM states initialized.")
+    if agent.is_rnn: agent.init_rnn()
 
     print("[INFO] RL Model Loaded Successfully.")
 
     # =================================================================
-    # 2. 로봇 연결
+    # 2. 로봇 연결 (Replay 모드여도 실제 로봇에 연결)
     # =================================================================
     print("[INFO] Connecting to Robot...")
     config = FR3RobotConfig(use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion", arm_action_dim=6)
-    robot  = FR3Robot(config)
-
+    robot = FR3Robot(config)
+    
     try:
         robot.connect()
     except Exception as e:
@@ -138,16 +118,20 @@ def main():
         print("[ERROR] Failed to connect to robot.")
         return
 
-    # 실제 obs key 확인용 (최초 1회)
-    print("[DEBUG] Checking robot.get_observation() keys...")
-    _obs_dict = robot.get_observation()
-    for k, v in _obs_dict.items():
-        print(f"  {k}: shape={np.array(v).shape}")
+    # =================================================================
+    # 3. CSV 데이터 로드
+    # =================================================================
+    replay_data = None
+    if args.replay:
+        print(f"[INFO] Loading CSV for observations: {args.replay}")
+        replay_data = pd.read_csv(args.replay)
+        print(f"[INFO] Loaded {len(replay_data)} steps from CSV. Robot will be driven by these observations.")
 
     # =================================================================
-    # 3. Control Loop
+    # 4. Control Loop
     # =================================================================
     dt = 1.0 / args.control_hz
+    step_idx = 0
     print(f"\n[INFO] Starting control loop at {args.control_hz} Hz. Ctrl+C or 'q' to stop.")
 
     try:
@@ -155,7 +139,26 @@ def main():
             t_start = time.time()
 
             # --- A. Observation ---
-            obs_dict     = robot.get_observation()
+            if args.replay:
+                # CSV가 끝났으면 종료
+                if step_idx >= len(replay_data):
+                    print("\n[INFO] Replay CSV finished.")
+                    break
+                
+                row = replay_data.iloc[step_idx]
+                obs_dict = {}
+                for key, dim in OBS_KEYS_AND_DIM:
+                    if dim == 1:
+                        obs_dict[key] = np.array([row[f"obs/{key}"]], dtype=np.float32)
+                    else:
+                        obs_dict[key] = np.array([row[f"obs/{key}_{i}"] for i in range(dim)], dtype=np.float32)
+                
+                print(f"[REPLAY] Sending step {step_idx}/{len(replay_data)} to robot...", end='\r')
+                step_idx += 1
+            else:
+                obs_dict = robot.get_observation()
+
+            # 시각화를 위한 VLA 데이터 (실제 센서 데이터 유지)
             vla_obs_dict = robot.get_vla_observation() if args.visualize else {}
 
             # --- B. Obs → tensor ---
@@ -163,19 +166,18 @@ def main():
 
             # --- C. RL Inference ---
             with torch.inference_mode():
-                obs_t     = agent.obs_to_torch(obs_tensor)
+                obs_t = agent.obs_to_torch(obs_tensor)
                 rl_action = agent.get_action(obs_t, is_deterministic=True)
-                # clip_actions=1.0은 agent 내부에서 처리됨
             
-            arm_action_np = rl_action.cpu().numpy().flatten()[:6]  # (6,) delta EE pose
-            # for compensation height difference because of FT sensor
+            action_np = rl_action.cpu().numpy().flatten()
+            arm_action_np = action_np[:6]
+            # FT 센서 높이 보정
             arm_action_np[2] += 0.15
 
-            # --- D. Action 전송 ---
-            # gripper: task logic에 따라 조정 (현재는 열린 상태 고정)
+            # --- D. Action 전송 (무조건 전송) ---
             action_dict = {
-                "arm_actions":     arm_action_np,
-                "success_prediction": rl_action.cpu().numpy().flatten()[6:],
+                "arm_actions": arm_action_np,
+                "success_prediction": action_np[6:],
                 "gripper_actions": np.array([0.0], dtype=np.float32),
             }
             robot.send_action(action_dict)
@@ -187,21 +189,18 @@ def main():
                     obs_key = f"video.{key}_view"
                     if obs_key in vla_obs_dict:
                         frame = vla_obs_dict[obs_key]
-                        if frame.ndim == 4:
-                            frame = frame[0]
+                        if frame.ndim == 4: frame = frame[0]
                         bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                         label = key
                     else:
-                        bgr   = np.zeros((config.cameras[key].height,
-                                          config.cameras[key].width, 3), dtype=np.uint8)
+                        bgr = np.zeros((config.cameras[key].height, config.cameras[key].width, 3), dtype=np.uint8)
                         label = f"{key} (no frame)"
-                    cv2.putText(bgr, label, (10, 30),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
+                    cv2.putText(bgr, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
                     panels.append(bgr)
 
                 cv2.imshow("FR3 Multi-Camera Viewer", np.hstack(panels))
                 if cv2.waitKey(1) & 0xFF == ord("q"):
-                    print("[INFO] 'q' pressed. Exiting.")
+                    print("\n[INFO] 'q' pressed. Exiting.")
                     break
 
             # --- F. 주기 유지 ---
@@ -209,8 +208,8 @@ def main():
             sleep_t = dt - elapsed
             if sleep_t > 0:
                 time.sleep(sleep_t)
-            elif elapsed > dt * 1.1:
-                print(f"[WARN] Loop overrun: {elapsed*1000:.1f} ms > {dt*1000:.1f} ms")
+
+            print(f"time: {time.time() - t_start}")
 
     except KeyboardInterrupt:
         print("\n[INFO] Stopped by user.")
@@ -219,9 +218,9 @@ def main():
         raise
     finally:
         cv2.destroyAllWindows()
-        robot.disconnect()
+        if robot:
+            robot.disconnect()
         print("[INFO] Robot disconnected safely.")
-
 
 if __name__ == "__main__":
     main()
