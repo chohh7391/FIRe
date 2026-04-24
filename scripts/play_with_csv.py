@@ -15,6 +15,7 @@ def parse_args():
     parser.add_argument("--hz",       type=float, default=15.0, help="Control loop rate (Hz)")
     parser.add_argument("--log",      action="store_true",      help="Enable logging")
     parser.add_argument("--log_dir",  type=str, default="logs", help="Directory to save logs")
+    parser.add_argument("--use_sim_time", action="store_true", help="Use simulation time")
     return parser.parse_args()
 
 
@@ -45,7 +46,7 @@ def main():
         print(f"[ERROR] Failed to read CSV: {e}")
         return
 
-    action_cols = [f"action_{i}" for i in range(6)]
+    action_cols = [f"processed_action_{i}" for i in range(6)]
     if not all(col in df.columns for col in action_cols):
         print(f"[ERROR] CSV must contain columns: {action_cols}")
         return
@@ -54,7 +55,7 @@ def main():
     # 2. 로봇 연결
     # =================================================================
     print("[INFO] Connecting to Robot...")
-    config = FR3RobotConfig(is_relative=False, rotation_type="axis_angle", arm_action_dim=6)
+    config = FR3RobotConfig(use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion", arm_action_dim=7)
     robot  = FR3Robot(config)
     robot.connect()
 
@@ -76,7 +77,7 @@ def main():
     # =================================================================
     # 4. 제어 루프
     # =================================================================
-    sleep_time  = 1.0 / args.hz
+    dt = 1.0 / args.hz
     total_steps = len(df)
     print(f"\n[INFO] Starting CSV Playback! (Steps: {total_steps}, Rate: {args.hz} Hz)")
 
@@ -89,28 +90,37 @@ def main():
             vla_obs_dict = robot.get_vla_observation()
 
             # --- B. Action 구성 ---
-            arm_action = np.array([
-                row["action_0"],
-                row["action_1"],
-                row["action_2"] + 0.3,
-                row["action_3"],
-                row["action_4"],
-                row["action_5"],
+            arm_action_np = np.array([
+                row["raw_action_0"],
+                row["raw_action_1"],
+                row["raw_action_2"],
+                row["raw_action_3"],
+                row["raw_action_4"],
+                row["raw_action_5"],
             ], dtype=np.float32)
+            # arm_action_np = np.array([
+            #     row["processed_action_0"],
+            #     row["processed_action_1"],
+            #     row["processed_action_2"],
+            #     row["processed_action_3"],
+            #     row["processed_action_4"],
+            #     row["processed_action_5"],
+            # ], dtype=np.float32)
             gripper_action = np.array([-1.0], dtype=np.float32)
 
             action_dict = {
-                "arm_actions":     np.array([arm_action], dtype=np.float32),
-                "gripper_actions": gripper_action,
+                "arm_actions": arm_action_np,
+                "success_prediction": np.ones(1, dtype=np.float32),
+                "gripper_actions": gripper_action
             }
-            robot.send_action(action_dict)
+            robot.send_action(action_dict, is_raw_action=True)
 
             # --- C. 로그 기록 ---
             if args.log:
                 log_row = {"step": index, "timestamp": time.time()}
 
                 # action
-                for i, v in enumerate(arm_action):
+                for i, v in enumerate(arm_action_np):
                     log_row[f"action_{i}"] = v
                 log_row["gripper_action"] = gripper_action[0]
 
@@ -124,13 +134,14 @@ def main():
                 log_rows.append(log_row)
 
             # --- D. 진행 출력 ---
-            if index % 50 == 0:
-                elapsed = time.time() - t_start
-                print(f"[INFO] Step {index}/{total_steps}  loop={elapsed*1000:.1f}ms")
-
-            # --- E. 주기 유지 ---
             elapsed = time.time() - t_start
-            time.sleep(max(0.0, sleep_time - elapsed))
+            sleep_t = dt - elapsed
+            time.sleep(max(0.0, sleep_t))
+            elapsed = time.time() - t_start
+            print(f"[INFO] Step {index}/{total_steps}  loop={elapsed*1000:.1f}ms")
+
+            if index == 50:
+                break
 
         print("\n[INFO] CSV Playback Finished.")
 

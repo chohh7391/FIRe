@@ -10,6 +10,7 @@ from std_msgs.msg import Header, Float64MultiArray
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
 from std_srvs.srv import Trigger
+from rclpy.parameter import Parameter
 
 try:
     from cho_interfaces.action import VisionLanguageAction
@@ -71,7 +72,19 @@ class FR3Robot(Robot):
         if not rclpy.ok():
             rclpy.init()
         
-        self.node = rclpy.create_node('lerobot_fr3_vla_client')
+        self.node = rclpy.create_node(
+            'lerobot_fr3_vla_client',
+            parameter_overrides=[
+                Parameter(
+                    'use_sim_time',
+                    Parameter.Type.BOOL,
+                    self.config.use_sim_time,
+                )
+            ],
+        )
+        self.node.get_logger().info(
+            f"Clock mode: {'sim_time' if self.config.use_sim_time else 'real_time'}"
+        )
 
         self.action_cb_group = ReentrantCallbackGroup()
 
@@ -216,46 +229,20 @@ class FR3Robot(Robot):
         
         return obs_dict
 
-    # def send_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
-    #     if not self.is_connected:
-    #         raise ConnectionError(f"{self.name} is not connected.")
-
-    #     if not self._goal_accepted:
-    #         self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
-    #         return action
-        
-    #     # processed_arm_action = self._process_action(action["arm_actions"])
-
-    #     # arm_action_np = np.array(processed_arm_action).reshape(-1)
-    #     arm_action_np = np.array([action["arm_actions"]], dtype=np.float32)
-    #     gripper_action_np = np.array(action.get("gripper_actions", [])).reshape(-1)
-    #     chunk_size = len(arm_action_np) // self.config.arm_action_dim
-
-    #     msg = ActionChunk()
-    #     # 헤더 시간 및 프레임 명시 (Tester 참고)
-    #     msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
-    #     msg.action_space = self.config.action_space
-    #     msg.relative = self.config.is_relative
-    #     msg.rotation_type = self.config.rotation_type
-    #     msg.chunk_size = chunk_size
-        
-    #     msg.arm_actions = arm_action_np.tolist()
-    #     msg.gripper_actions = gripper_action_np.tolist()
-
-    #     self.pub_action_chunk.publish(msg)
-
-    #     self.prev_actions = action["arm_actions"] # np.concatenate([arm_action_np, gripper_action_np])
-    #     return action
-    
-    def send_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    def send_action(self, action: Dict[str, Any], is_raw_action: bool = True) -> Dict[str, Any]:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
 
         if not self._goal_accepted:
             self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
             return action
-
-        arm_action_np = np.array(action["arm_actions"]).reshape(-1)
+        
+        if is_raw_action:
+            processed_arm_action = self._process_action(action["arm_actions"])
+            arm_action_np = np.array(processed_arm_action).reshape(-1)
+        else:
+            arm_action_np = np.array(action["arm_actions"]).reshape(-1)
+        
         gripper_action_np = np.array(action.get("gripper_actions", [])).reshape(-1)
         chunk_size = len(arm_action_np) // self.config.arm_action_dim
 
@@ -263,7 +250,7 @@ class FR3Robot(Robot):
         # 헤더 시간 및 프레임 명시 (Tester 참고)
         msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
         msg.action_space = self.config.action_space
-        msg.relative = False
+        msg.relative = self.config.is_relative
         msg.rotation_type = self.config.rotation_type
         msg.chunk_size = chunk_size
         
@@ -272,9 +259,36 @@ class FR3Robot(Robot):
 
         self.pub_action_chunk.publish(msg)
 
-        # self.prev_actions = action["arm_actions"] + success_prediction
-        
+        self.prev_actions = np.concatenate([action["arm_actions"], action["success_prediction"]])
         return action
+    
+    # def send_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    #     if not self.is_connected:
+    #         raise ConnectionError(f"{self.name} is not connected.")
+
+    #     if not self._goal_accepted:
+    #         self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
+    #         return action
+
+    #     arm_action_np = np.array(action["arm_actions"]).reshape(-1)
+    #     gripper_action_np = np.array(action.get("gripper_actions", [])).reshape(-1)
+    #     chunk_size = len(arm_action_np) // self.config.arm_action_dim
+
+    #     msg = ActionChunk()
+    #     msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
+    #     msg.action_space = self.config.action_space
+    #     msg.relative = False
+    #     msg.rotation_type = self.config.rotation_type
+    #     msg.chunk_size = chunk_size
+        
+    #     msg.arm_actions = arm_action_np.tolist()
+    #     msg.gripper_actions = gripper_action_np.tolist()
+
+    #     self.pub_action_chunk.publish(msg)
+
+    #     # self.prev_actions = action["arm_actions"] + success_prediction
+        
+    #     return action
 
     def disconnect(self) -> None:
         if not self.is_connected:
@@ -394,16 +408,13 @@ class FR3Robot(Robot):
         ctrl_target_pos = self.fixed_pos_obs_frame + pos_error_clipped
 
         angle = np.linalg.norm(rot_action)
-        axis = rot_action / angle
+        axis = rot_action / angle if angle > 1e-6 else np.array([0.0, 0.0, 1.0])
 
         rot_action_quat = quat_from_angle_axis(angle, axis)
-        rot_action_quat = np.where(
-            angle > 1e-6, rot_action_quat, np.array([1.0, 0.0, 0.0, 0.0])
-        )
         ctrl_target_quat = quat_mul(rot_action_quat, self.robot_state_manager.ee_quat)
 
         target_euler_xyz = get_euler_xyz(ctrl_target_quat)
-        target_euler_xyz[0] = np.pi  # Restrict actions to be upright.
+        target_euler_xyz[0] = 3.14159  # Restrict actions to be upright.
         target_euler_xyz[1] = 0.0
 
         ctrl_target_quat = quat_from_euler_xyz(
