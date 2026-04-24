@@ -143,8 +143,11 @@ def main():
             elapsed = time.time() - t_start
             print(f"[INFO] Step {index}/{total_steps}  loop={elapsed*1000:.1f}ms")
 
-            # if index == 50:
-            #     break
+            if index == 50:
+                if args.log and log_rows:
+                    pd.DataFrame(log_rows).to_csv(log_path, index=False)
+                    print(f"[INFO] Log saved → {log_path}  ({len(log_rows)} steps)")
+                break
 
         print("\n[INFO] CSV Playback Finished.")
 

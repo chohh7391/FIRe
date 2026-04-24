@@ -8,6 +8,7 @@ class FTSensorConfig:
     config_path: str = os.path.join(os.path.dirname(__file__), "config", "bota_binary.json")
     warmup_s: float = 1.0
     timeout_ms: int = 200
+    update_hz: float = 100.0
 
     def __post_init__(self):
         if not os.path.exists(self.config_path):
