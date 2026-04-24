@@ -63,18 +63,22 @@ class RobotStateManager:
 
     @property
     def ee_pos(self) -> np.ndarray:
+        """return np.array([x, y, z])"""
         return self.ee_pose[0:3]
 
     @property
     def ee_quat(self) -> np.ndarray:
+        """return np.array([qw, qx, qy, qz])"""
         return self.ee_pose[3:7]
 
     @property
     def ee_linvel(self) -> np.ndarray:
+        """return np.array([lx, ly, lz])"""
         return self.ee_vel[0:3]
 
     @property
     def ee_angvel(self) -> np.ndarray:
+        """return np.array([ax, ay, az])"""
         return self.ee_vel[3:6]
 
     def _update_joint_states(self, msg: JointState):

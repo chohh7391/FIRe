@@ -32,6 +32,7 @@ from .utils.math_utils import (
     quat_mul,
     get_euler_xyz,
     quat_from_euler_xyz,
+    _wxyz_to_xyzw,
 )
 
 
@@ -60,6 +61,9 @@ class FR3Robot(Robot):
         self.camera_state_manager = None
 
         self.prev_actions = None
+        ema_lower, ema_upper = 0.025, 0.1
+        ema_rand = np.random.rand()
+        self.ema_factor = ema_lower + ema_rand * (ema_upper - ema_lower)
 
     @property
     def is_connected(self) -> bool:
@@ -191,11 +195,18 @@ class FR3Robot(Robot):
         # if task == "gear_mesh":
         #     fixed_tip_pos_local[0] = medium_gear_base_offset[0]
 
-        fixed_pos = np.array([0.6, 0.0, 0.05])
+        fixed_pos = np.array([0.6, 0.0, 0.05]) + np.array([-0.00341896, 0.03358, 0.000867025])
         fixed_quat = np.array([1.0, 0.0, 0.0, 0.0])
 
         fixed_tip_pos = fixed_pos + fixed_tip_pos_local
         self.fixed_pos_obs_frame = fixed_tip_pos
+
+        if self.prev_actions is not None:
+            prev_actions = self.prev_actions.copy()
+            prev_actions[3:5] = 0.0
+        else:
+            prev_actions = np.zeros((7,), dtype=np.float32)
+
 
         # TODO: change ee_pos, ee_quat to fingertip frame and so on
         obs_dict = {}
@@ -206,10 +217,7 @@ class FR3Robot(Robot):
         obs_dict["ee_angvel"] = self.robot_state_manager.ee_angvel
         obs_dict["force_threshold"] = contact_penalty_thresholds
         obs_dict["ft_force"] = self.ft_sensor.async_read()["force"]
-        if self.prev_actions is not None:
-            obs_dict["prev_actions"] = self.prev_actions
-        else:
-            obs_dict["prev_actions"] = np.zeros((7,), dtype=np.float32)
+        obs_dict["prev_actions"] = prev_actions
 
         return obs_dict
     
@@ -237,8 +245,15 @@ class FR3Robot(Robot):
             self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
             return action
         
+        if self.prev_actions is not None:
+            action["arm_actions"] = self.ema_factor * action["arm_actions"].copy() + (1 - self.ema_factor) * self.prev_actions[0:6]
+        else:
+            action["arm_actions"] = self.ema_factor * action["arm_actions"].copy() + (1 - self.ema_factor) * np.zeros(6)
+        
         if is_raw_action:
             processed_arm_action = self._process_action(action["arm_actions"])
+            # convert quaternion data from wxyz to xyzw
+            processed_arm_action[3:7] = _wxyz_to_xyzw(processed_arm_action[3:7])
             arm_action_np = np.array(processed_arm_action).reshape(-1)
         else:
             arm_action_np = np.array(action["arm_actions"]).reshape(-1)
@@ -393,32 +408,75 @@ class FR3Robot(Robot):
         pass
 
     def _process_action(self, raw_action):
-        pos_action = raw_action[0:3] * np.array([0.02, 0.02, 0.02])
-        rot_action = raw_action[3:6]
+        # Step (0): Scale actions to allowed range.
+        pos_action = raw_action[0:3] * np.array([0.05, 0.05, 0.05])
+        rot_action = raw_action[3:6] * np.array([1.0, 1.0, 1.0])
 
-        # if task == "nut_thread":
-        #     rot_action[2] = -(rot_action[2] + 1.0) * 0.5  # [-1, 0]
-        rot_action = rot_action * np.array([0.097, 0.097, 0.097])
+        # Step (1): Compute desired pose targets in EE frame.
+        # (1.a) Position. Action frame is assumed to be the top of the bolt (noisy estimate).
+        fixed_pos_action_frame = self.fixed_pos_obs_frame
+        ctrl_target_preclipped_pos = fixed_pos_action_frame + pos_action
+        # (1.b) Enforce rotation action constraints.
+        rot_action[0:2] = 0.0
 
-        ctrl_target_pos = self.robot_state_manager.ee_pos + pos_action
-        delta_pos = ctrl_target_pos - self.fixed_pos_obs_frame
-        pos_error_clipped = np.clip(
-            delta_pos, -0.05, 0.05
+        # Assumes joint limit is in (+x, -y)-quadrant of world frame.
+        rot_action[2] = np.deg2rad(-180.0) + np.deg2rad(270.0) * (rot_action[2] + 1.0) / 2.0  # Joint limit.
+        # (1.c) Get desired orientation target.
+        bolt_frame_quat = quat_from_euler_xyz(
+            roll=rot_action[0], pitch=rot_action[1], yaw=rot_action[2]
         )
-        ctrl_target_pos = self.fixed_pos_obs_frame + pos_error_clipped
 
-        angle = np.linalg.norm(rot_action)
-        axis = rot_action / angle if angle > 1e-6 else np.array([0.0, 0.0, 1.0])
+        quat_bolt_to_ee = quat_from_euler_xyz(
+            roll=np.pi, pitch=0.0, yaw=0.0
+        )
 
-        rot_action_quat = quat_from_angle_axis(angle, axis)
-        ctrl_target_quat = quat_mul(rot_action_quat, self.robot_state_manager.ee_quat)
+        ctrl_target_preclipped_quat = quat_mul(quat_bolt_to_ee, bolt_frame_quat)
 
-        target_euler_xyz = get_euler_xyz(ctrl_target_quat)
-        target_euler_xyz[0] = 3.14159  # Restrict actions to be upright.
-        target_euler_xyz[1] = 0.0
+        # Step (2): Clip targets if they are too far from current EE pose.
+        # (2.a): Clip position targets.
+        delta_pos = ctrl_target_preclipped_pos - self.robot_state_manager.ee_pos
+        pos_error_clipped = np.clip(
+            delta_pos, -0.02, 0.02
+        )
+        ctrl_target_pos = self.robot_state_manager.ee_pos + pos_error_clipped
+
+        # (2.b) Clip orientation targets. Use Euler angles. We assume we are near upright, so
+        # clipping yaw will effectively cause slow motions. When we clip, we also need to make
+        # sure we avoid the joint limit.
+
+        # (2.b.i) Get current and desired Euler angles.
+        curr_roll, curr_pitch, curr_yaw = get_euler_xyz(self.robot_state_manager.ee_quat)
+        desired_roll, desired_pitch, desired_yaw = get_euler_xyz(ctrl_target_preclipped_quat)
+        desired_xyz = np.array([desired_roll, desired_pitch, desired_yaw])
+
+        # (2.b.ii) Correct the direction of motion to avoid joint limit.
+        # Map yaws between [-125, 235] degrees
+        # (so that angles appear on a continuous span uninterrupted by the joint limit)
+        curr_yaw = np.where(curr_yaw > np.deg2rad(235), curr_yaw - 2 * np.pi, curr_yaw)
+        desired_yaw = np.where(desired_yaw > np.deg2rad(235), desired_yaw - 2 * np.pi, desired_yaw)
+
+        # (2.b.iii) Clip motion in the correct direction.
+        delta_yaw = desired_yaw - curr_yaw
+        clipped_yaw = np.clip(delta_yaw, -0.097, 0.097)
+        desired_xyz[2] = curr_yaw + clipped_yaw
+
+        # (2.b.iv) Clip roll and pitch.
+        desired_roll = np.where(desired_roll < 0.0, desired_roll + 2 * np.pi, desired_roll)
+        desired_pitch = np.where(desired_pitch < 0.0, desired_pitch + 2 * np.pi, desired_pitch)
+
+        delta_roll = desired_roll - curr_roll
+        clipped_roll = np.clip(delta_roll, -0.097, 0.097)
+        desired_xyz[0] = curr_roll + clipped_roll
+
+        curr_pitch = np.where(curr_pitch > np.pi, curr_pitch - 2 * np.pi, curr_pitch)
+        desired_pitch = np.where(desired_pitch > np.pi, desired_pitch - 2 * np.pi, desired_pitch)
+
+        delta_pitch = desired_pitch - curr_pitch
+        clipped_pitch = np.clip(delta_pitch, -0.097, 0.097)
+        desired_xyz[1] = curr_pitch + clipped_pitch
 
         ctrl_target_quat = quat_from_euler_xyz(
-            roll=target_euler_xyz[0], pitch=target_euler_xyz[1], yaw=target_euler_xyz[2]
+            roll=desired_xyz[0], pitch=desired_xyz[1], yaw=desired_xyz[2]
         )
 
         return np.concatenate([ctrl_target_pos, ctrl_target_quat])
