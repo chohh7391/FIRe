@@ -11,6 +11,8 @@ SOURCE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
 
 @dataclass
 class FR3RobotConfig(RobotConfig):
+    use_sim_time: bool = False
+    
     ros_domain_id: int = 0
     
     # --- ROS 2 토픽 및 액션 서버 이름 ---

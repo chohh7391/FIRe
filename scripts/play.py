@@ -14,12 +14,14 @@ from lerobot_robot_fr3.fr3 import FR3Robot
 
 
 OBS_KEYS_AND_DIM = [
-    # ("fingertip_pos",           3),
+    # ("fingertip_pos", 3),
     ("fingertip_pos_rel_fixed", 3),
-    ("fingertip_quat",          4),
-    ("ee_linvel",               3),
-    ("ee_angvel",               3),
-    ("prev_actions",            6),
+    ("fingertip_quat", 4),
+    ("ee_linvel", 3),
+    ("ee_angvel", 3),
+    ("force_threshold", 1),
+    ("ft_force", 3),
+    ("prev_actions", 7),
 ]
 
 def build_obs_tensor(obs_dict: dict, obs_dim: int, device: torch.device) -> torch.Tensor:
@@ -61,14 +63,15 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--cfg",        type=str, required=True)
-    parser.add_argument("--obs_dim",    type=int, default=19,
-                        help="env.yaml: observation_space=21")
-    parser.add_argument("--action_dim", type=int, default=6,
-                        help="env.yaml: action_space=6 (gripper는 policy 외부 제어)")
+    parser.add_argument("--obs_dim",    type=int, default=24,
+                        help="env.yaml: observation_space=24")
+    parser.add_argument("--action_dim", type=int, default=7,
+                        help="env.yaml: action_space=7 (arm_action + success prediction)")
     parser.add_argument("--device",     type=str, default="cuda:0")
     parser.add_argument("--control_hz", type=float, default=15.0,
                         help="dt=0.00833 x decimation=8 ≈ 15 Hz")
     parser.add_argument("--visualize",  action="store_true", default=False)
+    parser.add_argument("--use_sim_time", action="store_true", help="Use simulation time")
     return parser.parse_args()
 
 
@@ -122,7 +125,7 @@ def main():
     # 2. 로봇 연결
     # =================================================================
     print("[INFO] Connecting to Robot...")
-    config = FR3RobotConfig(is_relative=False, rotation_type="quaternion", arm_action_dim=6)
+    config = FR3RobotConfig(use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion", arm_action_dim=6)
     robot  = FR3Robot(config)
 
     try:
@@ -163,13 +166,16 @@ def main():
                 obs_t     = agent.obs_to_torch(obs_tensor)
                 rl_action = agent.get_action(obs_t, is_deterministic=True)
                 # clip_actions=1.0은 agent 내부에서 처리됨
-
+            
             arm_action_np = rl_action.cpu().numpy().flatten()[:6]  # (6,) delta EE pose
+            # for compensation height difference because of FT sensor
+            arm_action_np[2] += 0.15
 
             # --- D. Action 전송 ---
             # gripper: task logic에 따라 조정 (현재는 열린 상태 고정)
             action_dict = {
                 "arm_actions":     arm_action_np,
+                "success_prediction": rl_action.cpu().numpy().flatten()[6:],
                 "gripper_actions": np.array([0.0], dtype=np.float32),
             }
             robot.send_action(action_dict)
