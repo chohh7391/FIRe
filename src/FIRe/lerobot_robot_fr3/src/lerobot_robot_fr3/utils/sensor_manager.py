@@ -1,3 +1,5 @@
+import threading
+
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import WrenchStamped
@@ -120,6 +122,7 @@ class FTSensorManager:
         # data
         self._raw_data = {"force": np.zeros(3), "torque": np.zeros(3)}
         self._data = {"force": np.zeros(3), "torque": np.zeros(3)}
+        self._data_lock = threading.Lock()
 
         self._scale = np.array([-1.0, -1.0, -1.0, 1.0, 1.0, 1.0])
         
@@ -217,23 +220,25 @@ class FTSensorManager:
     
     @property
     def data(self) -> Dict[str, np.ndarray]:
-        return self._data
+        with self._data_lock:
+            return {"force": self._data["force"].copy(), "torque": self._data["torque"].copy()}
 
-    @property    
+    @property
     def force(self) -> np.ndarray:
-        return self._data["force"]
-    
+        with self._data_lock:
+            return self._data["force"].copy()
+
     @property
     def torque(self) -> np.ndarray:
-        return self._data["torque"]
-    
+        with self._data_lock:
+            return self._data["torque"].copy()
+
     def process_data(self) -> None:
-        """딕셔너리 연산 에러 수정 (force와 torque를 분리해서 스케일링)"""
         if self.is_initialized:
             scaled_force = self._raw_data["force"] * self._scale[0:3]
             scaled_torque = self._raw_data["torque"] * self._scale[3:6]
-            
-            self._data = {
-                "force": scaled_force,
-                "torque": scaled_torque
-            }
+            with self._data_lock:
+                self._data = {
+                    "force": scaled_force,
+                    "torque": scaled_torque
+                }
