@@ -1,3 +1,5 @@
+import threading
+
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
@@ -14,6 +16,7 @@ class RobotStateManager:
         self._joint_states = JointState()
         self._ee_pose = Pose()
         self._ee_vel = Twist()
+        self._state_lock = threading.Lock()
 
         self.cb_group = ReentrantCallbackGroup()
 
@@ -32,9 +35,12 @@ class RobotStateManager:
 
     @property
     def joint_states(self) -> Dict[str, np.ndarray]:
-        joint_positions = np.array(self._joint_states.position, dtype=np.float32)
-        joint_velocities = np.array(self._joint_states.velocity, dtype=np.float32)
-        joint_efforts = np.array(self._joint_states.effort, dtype=np.float32)
+        # Snapshot the message reference so all three arrays come from the same update.
+        with self._state_lock:
+            snapshot = self._joint_states
+        joint_positions = np.array(snapshot.position, dtype=np.float32)
+        joint_velocities = np.array(snapshot.velocity, dtype=np.float32)
+        joint_efforts = np.array(snapshot.effort, dtype=np.float32)
         return {
             "position": joint_positions,
             "velocity": joint_velocities,
@@ -44,8 +50,11 @@ class RobotStateManager:
     @property
     def ee_pose(self) -> np.ndarray:
         """return np.array([x, y, z, qw, qx, qy, qz])"""
-        pos = self._ee_pose.position
-        quat = self._ee_pose.orientation
+        # Snapshot so position and orientation come from the same message.
+        with self._state_lock:
+            snapshot = self._ee_pose
+        pos = snapshot.position
+        quat = snapshot.orientation
         return np.array([
             pos.x, pos.y, pos.z,
             quat.w, quat.x, quat.y, quat.z
@@ -54,8 +63,11 @@ class RobotStateManager:
     @property
     def ee_vel(self) -> np.ndarray:
         """return np.array([lx, ly, lz, ax, ay, az])"""
-        lv = self._ee_vel.linear
-        av = self._ee_vel.angular
+        # Snapshot so linear and angular velocities come from the same message.
+        with self._state_lock:
+            snapshot = self._ee_vel
+        lv = snapshot.linear
+        av = snapshot.angular
         return np.array([
             lv.x, lv.y, lv.z,
             av.x, av.y, av.z
@@ -82,10 +94,13 @@ class RobotStateManager:
         return self.ee_vel[3:6]
 
     def _update_joint_states(self, msg: JointState):
-        self._joint_states = msg
+        with self._state_lock:
+            self._joint_states = msg
 
     def _update_ee_pose(self, msg: PoseStamped):
-        self._ee_pose = msg.pose
+        with self._state_lock:
+            self._ee_pose = msg.pose
 
     def _update_ee_vel(self, msg: TwistStamped):
-        self._ee_vel = msg.twist
+        with self._state_lock:
+            self._ee_vel = msg.twist

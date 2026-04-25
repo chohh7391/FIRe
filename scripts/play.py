@@ -56,7 +56,6 @@ def parse_args():
     parser.add_argument("--control_hz", type=float, default=15.0)
     parser.add_argument("--visualize",  action="store_true", default=False)
     parser.add_argument("--use_sim_time", action="store_true")
-    # 리플레이 인자
     parser.add_argument("--replay",     type=str, default=None, help="Path to replay CSV file")
     return parser.parse_args()
 

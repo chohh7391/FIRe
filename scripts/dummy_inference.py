@@ -76,7 +76,7 @@ def main():
             _ = agent.get_action(obs_t, is_deterministic=True)
             
     if torch.cuda.is_available():
-        torch.cuda.synchronize() 
+        torch.cuda.synchronize()
 
     # =================================================================
     # 3. Inference 성능 측정 (Benchmark)
