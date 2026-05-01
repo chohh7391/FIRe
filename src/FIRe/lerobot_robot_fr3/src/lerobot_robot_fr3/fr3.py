@@ -104,7 +104,7 @@ class FR3Robot(Robot):
         self.action_cb_group = ReentrantCallbackGroup()
 
         self.robot_state_manager = RobotStateManager(self.node)
-        self.camera_sensor_manager = CameraSensorManager(self.node, self.config.cameras, fps=30.0)
+        # self.camera_sensor_manager = CameraSensorManager(self.node, self.config.cameras, fps=30.0)
         self.ft_sensor_manager = FTSensorManager(
             node=self.node, config=self.config.ft_sensor
         )
@@ -145,8 +145,8 @@ class FR3Robot(Robot):
         # connect to ft sensor
         self.ft_sensor_manager.connect()
 
-        # connect to cameras
-        self.camera_sensor_manager.connect()
+        # # connect to cameras
+        # self.camera_sensor_manager.connect()
 
         self._is_connected = True
         print(f"[{self.name}] VLA Client Connected and Ready!")
@@ -204,6 +204,7 @@ class FR3Robot(Robot):
             prev_actions[3:5] = 0.0
         else:
             prev_actions = np.zeros((7,), dtype=np.float32)
+            prev_actions[-1] = -1.0
 
 
         # TODO: change ee_pos, ee_quat to fingertip frame and so on
@@ -224,8 +225,8 @@ class FR3Robot(Robot):
             raise ConnectionError(f"{self.name} is not connected.")
         
         obs_dict = {}
-        for cam_key, cam_data in self.camera_sensor_manager.data.items():
-            obs_dict[f"video.{cam_key}_view"] = cam_data
+        # for cam_key, cam_data in self.camera_sensor_manager.data.items():
+        #     obs_dict[f"video.{cam_key}_view"] = cam_data
 
         obs_dict["state.eef_position"] = self.robot_state_manager.ee_pos
         obs_dict["state.eef_quaternion"] = self.robot_state_manager.ee_quat
@@ -279,7 +280,7 @@ class FR3Robot(Robot):
         if not self.is_connected:
             return
 
-        self.camera_sensor_manager.disconnect()
+        # self.camera_sensor_manager.disconnect()
         self.ft_sensor_manager.disconnect()
 
         print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
@@ -325,11 +326,11 @@ class FR3Robot(Robot):
         self._is_connected = False
         print(f"[{self.name}] Disconnected.")
 
-    @property
-    def _cameras_ft(self) -> Dict[str, tuple]:
-        return {
-            f"video.{name}_view": self.camera_sensor_manager.shapes[name] for name in self.camera_sensor_manager.names
-        }
+    # @property
+    # def _cameras_ft(self) -> Dict[str, tuple]:
+    #     return {
+    #         f"video.{name}_view": self.camera_sensor_manager.shapes[name] for name in self.camera_sensor_manager.names
+    #     }
 
     @property
     def observation_features(self) -> dict[str, tuple]:
@@ -351,7 +352,7 @@ class FR3Robot(Robot):
     @property
     def vla_observation_features(self) -> dict[str, tuple]:
         features = {
-            **self._cameras_ft,
+            # **self._cameras_ft,
             "state.eef_position": (3,),
             "state.eef_quaternion": (4,),
             "state.gripper_qpos": (2,),
