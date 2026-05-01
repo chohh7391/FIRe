@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot_policy_gr00t"
+version = "0.1.0"
+description = "GR00T Policy"
+requires-python = ">=3.10"
+dependencies = [
+    "transformers",
+]
+
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = { find = { where = ["src"] } }
