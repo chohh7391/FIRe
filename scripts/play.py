@@ -133,8 +133,30 @@ def parse_args():
     parser.add_argument("--visualize",  action="store_true", default=False)
     parser.add_argument("--use_sim_time", action="store_true")
     parser.add_argument("--replay",     type=str, default=None, help="Path to replay CSV file")
+
+    # Replay 모드 선택 (--replay와 함께 사용; 둘 중 하나만 지정 가능)
+    replay_mode = parser.add_mutually_exclusive_group()
+    replay_mode.add_argument(
+        "--raw",
+        action="store_true",
+        help="Replay 모드: CSV의 obs를 사용해 model inference → send_action(raw=True)",
+    )
+    replay_mode.add_argument(
+        "--pose",
+        action="store_true",
+        help="Replay 모드: CSV의 target_pos/quat을 직접 사용 → send_action(raw=False)",
+    )
+
     parser.add_argument("--save_path", type=str, help="Path to save collected data")
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    # --raw / --pose 는 --replay와 함께만 의미가 있음.
+    if (args.raw or args.pose) and not args.replay:
+        parser.error("--raw / --pose 는 --replay 와 함께 사용해야 합니다.")
+    if args.replay and not (args.raw or args.pose):
+        parser.error("--replay 사용 시 --raw 또는 --pose 중 하나를 반드시 지정해야 합니다.")
+
+    return args
 
 
 def load_replay_obs(replay_data: pd.DataFrame, step_idx: int, obs_dim: int) -> np.ndarray:
@@ -149,11 +171,43 @@ def load_replay_obs(replay_data: pd.DataFrame, step_idx: int, obs_dim: int) -> n
     return row[obs_cols].to_numpy(dtype=np.float32)
 
 
+def load_replay_target_pose(replay_data: pd.DataFrame, step_idx: int) -> np.ndarray:
+    """CSV에서 target_pos_x/y/z + target_quat_w/x/y/z 컬럼 (총 7개) 을 numpy array로 반환.
+
+    반환 shape: (7,) → [pos_x, pos_y, pos_z, quat_w, quat_x, quat_y, quat_z]
+    """
+    row = replay_data.iloc[step_idx]
+    pose_cols = [
+        "target_pos_x", "target_pos_y", "target_pos_z",
+        "target_quat_w", "target_quat_x", "target_quat_y", "target_quat_z",
+    ]
+    missing = [c for c in pose_cols if c not in replay_data.columns]
+    if missing:
+        raise KeyError(f"[REPLAY] CSV에 다음 컬럼이 없습니다: {missing}")
+
+    return row[pose_cols].to_numpy(dtype=np.float32)
+
+
+def load_replay_success_pred(replay_data: pd.DataFrame, step_idx: int) -> np.ndarray:
+    """CSV에서 raw_action_6 (success prediction) 을 numpy array (1,) 로 반환.
+
+    --pose 모드에서 send_action 으로 전달할 success_prediction placeholder 로 사용한다.
+    raw_action_6 컬럼이 없으면 0.0 을 사용한다.
+    """
+    if "raw_action_6" not in replay_data.columns:
+        return np.array([0.0], dtype=np.float32)
+    val = float(replay_data.iloc[step_idx]["raw_action_6"])
+    return np.array([val], dtype=np.float32)
+
+
 def main():
     from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
     from lerobot_robot_fr3.fr3 import FR3Robot
 
     args = parse_args()
+
+    # --pose 모드는 inference 프로세스가 필요 없다.
+    needs_inference = not (args.replay and args.pose)
 
     # =================================================================
     # 1. Shared memory + spin-wait 플래그 + Inference 프로세스 시작
@@ -164,19 +218,23 @@ def main():
     action_flag = RawValue(ctypes.c_int32, 0)
     stop_event  = mp.Event()
 
-    infer_proc = mp.Process(
-        target=run_inference_process,
-        args=(obs_shm, action_shm, obs_flag, action_flag, stop_event,
-              args.checkpoint, args.cfg, args.obs_dim, args.action_dim, args.device),
-        daemon=True,
-    )
-    infer_proc.start()
+    infer_proc = None
+    if needs_inference:
+        infer_proc = mp.Process(
+            target=run_inference_process,
+            args=(obs_shm, action_shm, obs_flag, action_flag, stop_event,
+                  args.checkpoint, args.cfg, args.obs_dim, args.action_dim, args.device),
+            daemon=True,
+        )
+        infer_proc.start()
 
-    print("[INFO] Waiting for inference process to warm up...")
-    while action_flag.value != 2:
-        time.sleep(0.1)
-    action_flag.value = 0
-    print("[INFO] Inference process ready.")
+        print("[INFO] Waiting for inference process to warm up...")
+        while action_flag.value != 2:
+            time.sleep(0.1)
+        action_flag.value = 0
+        print("[INFO] Inference process ready.")
+    else:
+        print("[INFO] --replay --pose 모드: inference 프로세스를 시작하지 않습니다.")
 
     # =================================================================
     # 2. 로봇 연결
@@ -190,13 +248,15 @@ def main():
     except Exception as e:
         print(f"[ERROR] Connection failed: {e}")
         stop_event.set()
-        infer_proc.join(timeout=3)
+        if infer_proc is not None:
+            infer_proc.join(timeout=3)
         return
 
     if not robot.is_connected:
         print("[ERROR] Failed to connect to robot.")
         stop_event.set()
-        infer_proc.join(timeout=3)
+        if infer_proc is not None:
+            infer_proc.join(timeout=3)
         return
 
     # =================================================================
@@ -204,19 +264,30 @@ def main():
     # =================================================================
     replay_data = None
     if args.replay:
-        print(f"[INFO] Loading CSV for observations: {args.replay}")
+        print(f"[INFO] Loading CSV: {args.replay}")
         replay_data = pd.read_csv(args.replay)
         print(f"[INFO] Loaded {len(replay_data)} steps from CSV.")
 
-        # obs_0 ~ obs_{obs_dim-1} 컬럼 존재 여부 사전 확인
-        expected_cols = [f"obs_{i}" for i in range(args.obs_dim)]
+        if args.raw:
+            # --raw: obs_0 ~ obs_{obs_dim-1} 컬럼 검증
+            expected_cols = [f"obs_{i}" for i in range(args.obs_dim)]
+            mode_label = f"obs_0 ~ obs_{args.obs_dim - 1}"
+        else:  # args.pose
+            # --pose: target_pos / target_quat 컬럼 검증
+            expected_cols = [
+                "target_pos_x", "target_pos_y", "target_pos_z",
+                "target_quat_w", "target_quat_x", "target_quat_y", "target_quat_z",
+            ]
+            mode_label = "target_pos_*, target_quat_*"
+
         missing_cols = [c for c in expected_cols if c not in replay_data.columns]
         if missing_cols:
             print(f"[ERROR] CSV에 필요한 컬럼이 없습니다: {missing_cols}")
             stop_event.set()
-            infer_proc.join(timeout=3)
+            if infer_proc is not None:
+                infer_proc.join(timeout=3)
             return
-        print(f"[INFO] obs_0 ~ obs_{args.obs_dim - 1} 컬럼 확인 완료.")
+        print(f"[INFO] {mode_label} 컬럼 확인 완료.")
 
     # =================================================================
     # 4. Control Loop 및 데이터 로깅 준비
@@ -236,9 +307,9 @@ def main():
             # --- A. Observation ---
             t0 = time.perf_counter()
 
-            if args.replay:
+            if args.replay and args.raw:
                 # -------------------------------------------------------
-                # Replay 모드: CSV의 obs_0~obs_N을 직접 shared memory에 씀
+                # Replay --raw 모드: CSV의 obs_0~obs_N을 직접 shared memory에 씀
                 # write_obs_to_shm을 거치지 않고 바로 obs_buf에 복사
                 # -------------------------------------------------------
                 if step_idx >= len(replay_data):
@@ -246,8 +317,20 @@ def main():
                     break
 
                 obs_buf[:] = load_replay_obs(replay_data, step_idx, args.obs_dim)
-                obs_dict = None  # replay 모드에서는 obs_dict 불필요
-                print(f"[REPLAY] step {step_idx + 1}/{len(replay_data)}", end='\r')
+                obs_dict = None  # replay --raw 모드에서는 obs_dict 불필요
+                print(f"[REPLAY-RAW] step {step_idx + 1}/{len(replay_data)}", end='\r')
+
+            elif args.replay and args.pose:
+                # -------------------------------------------------------
+                # Replay --pose 모드: obs 없음. inference도 안 함.
+                # CSV의 target_pos/quat을 그대로 send_action에 전달한다.
+                # -------------------------------------------------------
+                if step_idx >= len(replay_data):
+                    print("\n[INFO] Replay CSV finished.")
+                    break
+
+                obs_dict = None
+                print(f"[REPLAY-POSE] step {step_idx + 1}/{len(replay_data)}", end='\r')
 
             else:
                 # -------------------------------------------------------
@@ -263,61 +346,90 @@ def main():
             # --- B. Obs → shared memory (실시간 모드만 write_obs_to_shm 사용) ---
             if not args.replay:
                 write_obs_to_shm(obs_dict, obs_buf)
-            # replay 모드는 이미 A 단계에서 obs_buf에 직접 썼으므로 skip
+            # replay --raw 모드는 이미 A 단계에서 obs_buf에 직접 썼으므로 skip
+            # replay --pose 모드는 obs / inference 자체가 없으므로 skip
             t2 = time.perf_counter()
 
-            # --- C. Inference 요청 → spin-wait으로 결과 대기 ---
-            obs_flag.value = 1
-            while action_flag.value == 0:
-                pass
-            action_flag.value = 0
+            # --- C. Action 결정 ---
+            #   * 실시간 / replay --raw: inference 프로세스를 통해 action 계산
+            #   * replay --pose       : CSV에서 target_pos/quat을 직접 로드
+            if args.replay and args.pose:
+                # CSV의 target pose를 그대로 사용. inference 우회.
+                target_pose_np = load_replay_target_pose(replay_data, step_idx)
+                action_np = None  # 아래 D 단계에서 분기 처리
+            else:
+                obs_flag.value = 1
+                while action_flag.value == 0:
+                    pass
+                action_flag.value = 0
+                action_np = action_shm.numpy().flatten()
+                target_pose_np = None
             t3 = time.perf_counter()
 
             # --- D. Action 전송 ---
-            action_np = action_shm.numpy().flatten()
-            arm_action_np = action_np[:6].copy()
-
-            action_dict = {
-                "arm_actions": arm_action_np,
-                "success_prediction": action_np[6:],
-                "gripper_actions": np.array([0.0], dtype=np.float32),
-            }
-            robot.send_action(action_dict)
+            if args.replay and args.pose:
+                action_dict = {
+                    "arm_actions": target_pose_np.astype(np.float32),
+                    "success_prediction": load_replay_success_pred(replay_data, step_idx),
+                    "gripper_actions": np.array([0.0], dtype=np.float32),
+                }
+                robot.send_action(action_dict, is_raw_action=False)
+            else:
+                # 실시간 / replay --raw 공통: model이 만든 raw 7-vec을 처리해 보낸다.
+                arm_action_np = action_np[:6].copy()
+                action_dict = {
+                    "arm_actions": arm_action_np,
+                    "success_prediction": action_np[6:],
+                    "gripper_actions": np.array([0.0], dtype=np.float32),
+                }
+                robot.send_action(action_dict)
             t4 = time.perf_counter()
 
             # --- 데이터 로깅 ---
             if args.save_path:
                 record_dict = robot.get_observation()
                 record = {
-                    "fingertip_pos_rel_fixed_1": record_dict["fingertip_pos_rel_fixed"][0],
-                    "fingertip_pos_rel_fixed_2": record_dict["fingertip_pos_rel_fixed"][1],
-                    "fingertip_pos_rel_fixed_3": record_dict["fingertip_pos_rel_fixed"][2],
-                    "fingertip_quat_0": record_dict["fingertip_quat"][0],
-                    "fingertip_quat_1": record_dict["fingertip_quat"][1],
-                    "fingertip_quat_2": record_dict["fingertip_quat"][2],
-                    "fingertip_quat_3": record_dict["fingertip_quat"][3],
-                    "ee_linvel_0": record_dict["ee_linvel"][0],
-                    "ee_linvel_1": record_dict["ee_linvel"][1],
-                    "ee_linvel_2": record_dict["ee_linvel"][2],
-                    "ee_angvel_0": record_dict["ee_angvel"][0],
-                    "ee_angvel_1": record_dict["ee_angvel"][1],
-                    "ee_angvel_2": record_dict["ee_angvel"][2],
-                    "force_threshold_0": record_dict["force_threshold"][0],
-                    "ft_force_0": record_dict["ft_force"][0],
-                    "ft_force_1": record_dict["ft_force"][1],
-                    "ft_force_2": record_dict["ft_force"][2],
-                    "prev_actions": record_dict["prev_actions"][0],
-                    "prev_actions": record_dict["prev_actions"][1],
-                    "prev_actions": record_dict["prev_actions"][2],
-                    "prev_actions": record_dict["prev_actions"][3],
-                    "prev_actions": record_dict["prev_actions"][4],
-                    "prev_actions": record_dict["prev_actions"][5],
-                    "prev_actions": record_dict["prev_actions"][6],
-                }
+                    "fingertip_pos_rel_fixed_x": record_dict["fingertip_pos_rel_fixed"][0],
+                    "fingertip_pos_rel_fixed_y": record_dict["fingertip_pos_rel_fixed"][1],
+                    "fingertip_pos_rel_fixed_z": record_dict["fingertip_pos_rel_fixed"][2],
+                    "fingertip_quat_w": record_dict["fingertip_quat"][0],
+                    "fingertip_quat_x": record_dict["fingertip_quat"][1],
+                    "fingertip_quat_y": record_dict["fingertip_quat"][2],
+                    "fingertip_quat_z": record_dict["fingertip_quat"][3],
+                    "ee_linvel_x": record_dict["ee_linvel"][0],
+                    "ee_linvel_y": record_dict["ee_linvel"][1],
+                    "ee_linvel_z": record_dict["ee_linvel"][2],
+                    "ee_angvel_x": record_dict["ee_angvel"][0],
+                    "ee_angvel_y": record_dict["ee_angvel"][1],
+                    "ee_angvel_z": record_dict["ee_angvel"][2],
+                    "force_threshold": record_dict["force_threshold"][0],
+                    # "ft_force_x": record_dict["ft_force"][0],
+                    # "ft_force_y": record_dict["ft_force"][1],
+                    # "ft_force_z": record_dict["ft_force"][2],
+                    "prev_actions_0": record_dict["prev_actions"][0],
+                    "prev_actions_1": record_dict["prev_actions"][1],
+                    "prev_actions_2": record_dict["prev_actions"][2],
+                    "prev_actions_3": record_dict["prev_actions"][3],
+                    "prev_actions_4": record_dict["prev_actions"][4],
+                    "prev_actions_5": record_dict["prev_actions"][5],
+                    "prev_actions_6": record_dict["prev_actions"][6],
 
-                # Action
-                for i in range(6):
-                    record[f"action_{i}"] = float(action_np[i])
+                    "ee_pos_x": robot.robot_state_manager.ee_pos[0],
+                    "ee_pos_y": robot.robot_state_manager.ee_pos[1],
+                    "ee_pos_z": robot.robot_state_manager.ee_pos[2],
+                    "ee_quat_w": robot.robot_state_manager.ee_quat[0],
+                    "ee_quat_x": robot.robot_state_manager.ee_quat[1],
+                    "ee_quat_y": robot.robot_state_manager.ee_quat[2],
+                    "ee_quat_z": robot.robot_state_manager.ee_quat[3],
+
+                    "target_pos_x": robot.processed_arm_action[0],
+                    "target_pos_y": robot.processed_arm_action[1],
+                    "target_pos_z": robot.processed_arm_action[2],
+                    "target_quat_w": robot.processed_arm_action[6],
+                    "target_quat_x": robot.processed_arm_action[3],
+                    "target_quat_y": robot.processed_arm_action[4],
+                    "target_quat_z": robot.processed_arm_action[5],
+                }
 
                 log_data.append(record)
 
@@ -378,7 +490,8 @@ def main():
             print(f"\n[INFO] Successfully saved {len(df)} steps to {save_path}")
 
         stop_event.set()
-        infer_proc.join(timeout=3)
+        if infer_proc is not None:
+            infer_proc.join(timeout=3)
         cv2.destroyAllWindows()
         if robot:
             robot.disconnect()

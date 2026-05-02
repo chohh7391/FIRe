@@ -35,7 +35,6 @@ from .utils.math_utils import (
 )
 
 
-
 class FR3Robot(Robot):
     config_class = FR3RobotConfig
     name = "fr3_vla"
@@ -56,10 +55,10 @@ class FR3Robot(Robot):
         # update robot state & can get robot state from this
         self.robot_state_manager = None
 
+        self.actions = np.zeros((7,), dtype=np.float32)  # 6 for arm, 1 for success prediction
         self.prev_actions = None
         ema_lower, ema_upper = 0.025, 0.1
-        ema_rand = np.random.rand()
-        self.ema_factor = ema_lower + ema_rand * (ema_upper - ema_lower)
+        self.ema_factor = ema_lower + 0.5 * (ema_upper - ema_lower)
 
         height, base_height = 0.025, 0.0  # hole
         # height, base_height = 0.02, 0.005  # gear
@@ -105,9 +104,9 @@ class FR3Robot(Robot):
 
         self.robot_state_manager = RobotStateManager(self.node)
         # self.camera_sensor_manager = CameraSensorManager(self.node, self.config.cameras, fps=30.0)
-        self.ft_sensor_manager = FTSensorManager(
-            node=self.node, config=self.config.ft_sensor
-        )
+        # self.ft_sensor_manager = FTSensorManager(
+        #     node=self.node, config=self.config.ft_sensor
+        # )
 
         self.pub_action_chunk = self.node.create_publisher(
             ActionChunk, self.config.action_topic, 10
@@ -142,11 +141,13 @@ class FR3Robot(Robot):
         else:
             print("Warning: Did not receive EE pose (TF transform) within timeout.")
 
-        # connect to ft sensor
-        self.ft_sensor_manager.connect()
+        # # connect to ft sensor
+        # self.ft_sensor_manager.connect()
 
         # # connect to cameras
         # self.camera_sensor_manager.connect()
+
+        self.reset()
 
         self._is_connected = True
         print(f"[{self.name}] VLA Client Connected and Ready!")
@@ -194,20 +195,13 @@ class FR3Robot(Robot):
             raise ConnectionError(f"{self.name} is not connected.")
         
         contact_lower, contact_upper = [5.0, 10.0]
-        contact_rand = np.random.rand()
         contact_penalty_thresholds = np.array([
-            contact_lower + contact_rand * (contact_upper - contact_lower)
+            contact_lower + 0.5 * (contact_upper - contact_lower)
         ])
 
-        if self.prev_actions is not None:
-            prev_actions = self.prev_actions.copy()
-            prev_actions[3:5] = 0.0
-        else:
-            prev_actions = np.zeros((7,), dtype=np.float32)
-            prev_actions[-1] = -1.0
+        prev_actions = self.actions.copy()
+        prev_actions[3:5] = 0.0
 
-
-        # TODO: change ee_pos, ee_quat to fingertip frame and so on
         obs_dict = {}
         # obs_dict["fingertip_pos"] = self.robot_state_manager.ee_pos
         obs_dict["fingertip_pos_rel_fixed"] = self.robot_state_manager.ee_pos - self.fixed_pos_obs_frame
@@ -215,7 +209,8 @@ class FR3Robot(Robot):
         obs_dict["ee_linvel"] = self.robot_state_manager.ee_linvel
         obs_dict["ee_angvel"] = self.robot_state_manager.ee_angvel
         obs_dict["force_threshold"] = contact_penalty_thresholds
-        obs_dict["ft_force"] = self.ft_sensor_manager.force
+        # TODO: smooth and transform using forge code
+        # obs_dict["ft_force"] = self.ft_sensor_manager.force
         obs_dict["prev_actions"] = prev_actions
 
         return obs_dict
@@ -244,18 +239,23 @@ class FR3Robot(Robot):
             self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
             return action
         
-        if self.prev_actions is not None:
-            action["arm_actions"] = self.ema_factor * action["arm_actions"].copy() + (1 - self.ema_factor) * self.prev_actions[0:6]
-        else:
-            action["arm_actions"] = self.ema_factor * action["arm_actions"].copy() + (1 - self.ema_factor) * np.zeros(6)
-        
         if is_raw_action:
-            processed_arm_action = self._process_action(action["arm_actions"])
+            self.actions[0:6] = self.ema_factor * action["arm_actions"].copy() + (1 - self.ema_factor) * self.actions[0:6]
+            self.actions[6] = self.ema_factor * action["success_prediction"].copy() + (1 - self.ema_factor) * self.actions[6]
+            # self.actions[0:6] = action["arm_actions"].copy()
+            # self.actions[6] = action["success_prediction"].copy()
+        
+            processed_arm_action = self._process_action()
             # convert quaternion data from wxyz to xyzw
             processed_arm_action[3:7] = _wxyz_to_xyzw(processed_arm_action[3:7])
             arm_action_np = np.array(processed_arm_action).reshape(-1)
         else:
-            arm_action_np = np.array(action["arm_actions"]).reshape(-1)
+            processed_arm_action = action["arm_actions"]
+            processed_arm_action[3:7] = _wxyz_to_xyzw(processed_arm_action[3:7])
+            arm_action_np = np.array(processed_arm_action).reshape(-1)
+
+        # for saving
+        self.processed_arm_action = processed_arm_action
         
         gripper_action_np = np.array(action.get("gripper_actions", [])).reshape(-1)
         chunk_size = len(arm_action_np) // self.config.arm_action_dim
@@ -273,7 +273,7 @@ class FR3Robot(Robot):
 
         self.pub_action_chunk.publish(msg)
 
-        self.prev_actions = np.concatenate([action["arm_actions"], action["success_prediction"]])
+        self.prev_actions = self.actions.copy()
         return action
 
     def disconnect(self) -> None:
@@ -281,7 +281,7 @@ class FR3Robot(Robot):
             return
 
         # self.camera_sensor_manager.disconnect()
-        self.ft_sensor_manager.disconnect()
+        # self.ft_sensor_manager.disconnect()
 
         print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
         trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')
@@ -376,10 +376,16 @@ class FR3Robot(Robot):
     def configure(self) -> None:
         pass
 
-    def _process_action(self, raw_action):
+    def _process_action(self):
         # Step (0): Scale actions to allowed range.
-        pos_action = raw_action[0:3] * np.array([0.05, 0.05, 0.05])
-        rot_action = raw_action[3:6] * np.array([1.0, 1.0, 1.0])
+        # self.actions[0] = 0.0
+        # self.actions[1] = 0.0
+        # self.actions[2] = 1.0
+        # self.actions[3] = 0.0
+        # self.actions[4] = 0.0
+        # self.actions[5] = 1.0
+        pos_action = self.actions[0:3] * np.array([0.05, 0.05, 0.05])
+        rot_action = self.actions[3:6] * np.array([1.0, 1.0, 1.0])
 
         # Step (1): Compute desired pose targets in EE frame.
         # (1.a) Position. Action frame is assumed to be the top of the bolt (noisy estimate).
@@ -450,3 +456,32 @@ class FR3Robot(Robot):
 
         return np.concatenate([ctrl_target_pos, ctrl_target_quat])
 
+    def reset(self) -> None:
+        self.actions = np.zeros_like(self.actions)
+        self.prev_actions = np.zeros_like(self.actions)
+
+        # Compute initial action for correct EMA computation.
+        fixed_pos_action_frame = self.fixed_pos_obs_frame
+        pos_action = self.robot_state_manager.ee_pos - fixed_pos_action_frame
+        pos_action_bound = 0.05
+        pos_action = pos_action / pos_action_bound
+        self.actions[0:3] = self.prev_actions[0:3] = pos_action
+
+        # Relative yaw to bolt.
+        unrot_180_euler = -np.pi
+        unrot_quat = quat_from_euler_xyz(
+            roll=unrot_180_euler, pitch=0.0, yaw=0.0
+        )
+
+        fingertip_quat_rel_bolt = quat_mul(unrot_quat, self.robot_state_manager.ee_quat)
+        fingertip_yaw_bolt = get_euler_xyz(fingertip_quat_rel_bolt)[-1]
+        fingertip_yaw_bolt = np.where(
+            fingertip_yaw_bolt > np.pi / 2, fingertip_yaw_bolt - 2 * np.pi, fingertip_yaw_bolt
+        )
+        fingertip_yaw_bolt = np.where(
+            fingertip_yaw_bolt < -np.pi, fingertip_yaw_bolt + 2 * np.pi, fingertip_yaw_bolt
+        )
+
+        yaw_action = (fingertip_yaw_bolt + np.deg2rad(180.0)) / np.deg2rad(270.0) * 2.0 - 1.0
+        self.actions[5] = self.prev_actions[5] = yaw_action
+        self.actions[6] = self.prev_actions[6] = -1.0
