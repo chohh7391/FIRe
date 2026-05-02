@@ -45,8 +45,7 @@ python test/test_lerobot_robot_fr3.py
 
 - run model (test)
 ```bash
-source ~/ros2_ws/install/setup.bash
-python scripts/play.py --checkpoint checkpoints/VLA_RL-BL-forge-peg_insert/nn/Forge.pth --cfg scripts/configs/rl_games_ppo_cfg.yaml --obs_dim 24 --action_dim 7 --device cuda:0 --control_hz 15.0  --replay <CSV_PATH>
+python scripts/play.py --checkpoint /home/home/FIRe/checkpoints/Forge/peg_insert/nn/Forge.pth --cfg /home/home/FIRe/scripts/configs/rl_games_ppo_cfg.yaml --use_sim_time --save_path /home/home/FIRe/logs/20260501 --replay /home/home/FIRe/logs/sim_data/forge_data.csv --raw
 ```
 
 - for specific task
