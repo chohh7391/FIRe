@@ -1,0 +1,130 @@
+import numpy as np
+from typing import Dict, Any, Tuple
+from dataclasses import dataclass
+from lerobot_robot_fr3.tasks.base_task import Task
+from .factory_cfg import (
+    FactoryTaskPegInsertCfg,
+    FactoryTaskGearMeshCfg,
+    FactoryTaskNutThreadCfg,
+)
+from lerobot_robot_fr3.utils.math_utils import quat_from_angle_axis, quat_mul, get_euler_xyz, quat_from_euler_xyz
+
+
+class Factory(Task):
+    def __init__(self, name: str):
+        super().__init__(name)
+
+        self.create_config()
+        self.create_buffer()
+
+        self.fixed_pos = np.array([0.6, 0.0, 0.05])
+        self.fixed_quat = np.array([1.0, 0.0, 0.0, 0.0])
+
+    def create_config(self):
+        if self.name == "peg_insert":
+            self.env_cfg = FactoryTaskPegInsertCfg()
+        elif self.name == "gear_mesh":
+            self.env_cfg = FactoryTaskGearMeshCfg()
+        elif self.name == "nut_thread":
+            self.env_cfg = FactoryTaskNutThreadCfg()
+        else:
+            raise ValueError(f"Unknown task name: {self.name}")
+
+        self.ctrl_cfg = self.env_cfg.ctrl
+        self.task_cfg = self.env_cfg.task
+
+    def create_buffer(self):
+        self.action = np.zeros(self.env_cfg.action_space, dtype=np.float32)
+
+        self.ema_factor = self.ctrl_cfg.ema_factor
+        
+        self.pos_threshold = np.array(self.ctrl_cfg.pos_action_threshold, dtype=np.float32)
+        self.rot_threshold = np.array(self.ctrl_cfg.rot_action_threshold, dtype=np.float32)
+    
+    def reset(self):
+        fixed_tip_pos_local = np.zeros(3, dtype=np.float32)
+        fixed_tip_pos_local[2] += self.task_cfg.fixed_asset_cfg.height
+        fixed_tip_pos_local[2] += self.task_cfg.fixed_asset_cfg.base_height
+        if self.task_cfg.name == "gear_mesh":
+            fixed_tip_pos_local[0] = self.task_cfg.fixed_asset_cfg.medium_gear_base_offset[0]
+
+        fixed_tip_pos = self.fixed_pos + fixed_tip_pos_local
+        self.fixed_pos_obs_frame = fixed_tip_pos
+    
+    def get_observation(self) -> Dict[str, np.ndarray]:
+        prev_action = self.action.copy()
+        
+        obs_dict = {
+            "fingertip_pos_rel_fixed": self.robot.ee_pos - self.fixed_pos_obs_frame,
+            "fingertip_quat": self.robot.ee_quat,
+            "ee_linvel": self.robot.ee_linvel,
+            "ee_angvel": self.robot.ee_angvel,
+            "prev_actions": prev_action,
+        }
+        return obs_dict
+
+    def get_arm_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
+        return action["arm_actions"]
+
+    def get_gripper_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
+        return action["gripper_actions"]
+    
+    @property
+    def observation_features(self) -> Dict[str, Tuple[int, ...]]:
+        return {
+            "fingertip_pos_rel_fixed": (3,),
+            "fingertip_quat": (4,),
+            "ee_linvel": (3,),
+            "ee_angvel": (3,),
+            "prev_actions": (6,),
+        }
+
+    @property
+    def action_features(self) -> Dict[str, Tuple[int, ...]]:
+        return {
+            "arm_actions": (self.env_cfg.action_space,),
+            "gripper_actions": (1,)
+        }
+    
+    def process_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        # apply EMA smoothing to the input action to ensure smoother control
+        self.action = self.ema_factor * arm_action.copy() + (1 - self.ema_factor) * self.action
+
+        pos_action = self.action[0:3] * self.pos_threshold
+        rot_action = self.action[3:6] * self.rot_threshold
+
+        if self.task_cfg.unidirectional_rot:
+            rot_action[2] = -(rot_action[2] + 1.0) * 0.5  # [-1, 0]
+        rot_action = rot_action * self.rot_threshold
+
+        ctrl_target_fingertip_midpoint_pos = self.robot.ee_pos + pos_action
+        # To speed up learning, never allow the policy to move more than 5cm away from the base.
+        fixed_pos_action_frame = self.fixed_pos_obs_frame
+        delta_pos = ctrl_target_fingertip_midpoint_pos - fixed_pos_action_frame
+        pos_error_clipped = np.clip(
+            delta_pos, -self.ctrl_cfg.pos_action_bounds[0], self.ctrl_cfg.pos_action_bounds[1]
+        )
+        ctrl_target_fingertip_midpoint_pos = fixed_pos_action_frame + pos_error_clipped
+
+        # Convert to quat and set rot target
+        angle = np.linalg.norm(rot_action)
+        axis = rot_action / angle
+
+        rot_action_quat = quat_from_angle_axis(angle, axis)
+        rot_action_quat = np.where(
+            angle > 1e-6,
+            rot_action_quat,
+            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        )
+        ctrl_target_fingertip_midpoint_quat = quat_mul(rot_action_quat, self.robot.ee_quat)
+
+        target_euler_xyz = np.stack(get_euler_xyz(ctrl_target_fingertip_midpoint_quat))
+        target_euler_xyz[0] = 3.14159  # Restrict actions to be upright.
+        target_euler_xyz[1] = 0.0
+
+        ctrl_target_fingertip_midpoint_quat = quat_from_euler_xyz(
+            roll=target_euler_xyz[0], pitch=target_euler_xyz[1], yaw=target_euler_xyz[2]
+        )
+        ctrl_target_fingertip_midpoint_pose = np.concatenate([ctrl_target_fingertip_midpoint_pos, ctrl_target_fingertip_midpoint_quat])
+
+        return ctrl_target_fingertip_midpoint_pose, gripper_action

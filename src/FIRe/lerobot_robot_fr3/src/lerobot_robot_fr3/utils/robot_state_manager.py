@@ -42,9 +42,23 @@ class RobotStateManager:
         joint_velocities = np.array(snapshot.velocity, dtype=np.float32)
         joint_efforts = np.array(snapshot.effort, dtype=np.float32)
         return {
-            "position": joint_positions,
-            "velocity": joint_velocities,
-            "effort":   joint_efforts
+            "position": joint_positions[0:7],
+            "velocity": joint_velocities[0:7],
+            "effort":   joint_efforts[0:7]
+        }
+    
+    @property
+    def gripper_joint_states(self) -> Dict[str, np.ndarray]:
+        # Snapshot the message reference so all three arrays come from the same update.
+        with self._state_lock:
+            snapshot = self._joint_states
+        joint_positions = np.array(snapshot.position, dtype=np.float32)
+        joint_velocities = np.array(snapshot.velocity, dtype=np.float32)
+        joint_efforts = np.array(snapshot.effort, dtype=np.float32)
+        return {
+            "position": np.array([joint_positions[7], joint_positions[7]], dtype=np.float32),
+            "velocity": np.array([joint_velocities[7], joint_velocities[7]], dtype=np.float32),
+            "effort":   np.array([joint_efforts[7], joint_efforts[7]], dtype=np.float32),
         }
 
     @property
