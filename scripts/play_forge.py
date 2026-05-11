@@ -15,14 +15,10 @@ OBS_KEYS_AND_DIM = [
     ("fingertip_quat", 4),
     ("ee_linvel", 3),
     ("ee_angvel", 3),
-    ("prev_actions", 6),
+    ("force_threshold", 1),
+    ("ft_force", 3),
+    ("prev_actions", 7),
 ]
-# OBS_KEYS_AND_DIM = [
-#     ("joint_pos", 9),
-#     ("joint_vel", 9),
-#     ("pose_command", 7),
-#     ("actions", 7),
-# ]
 
 
 def write_obs_to_shm(obs_dict: dict, obs_buf: np.ndarray) -> None:
@@ -128,11 +124,10 @@ def run_inference_process(
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, default="peg_insert")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--cfg",        type=str, required=True)
-    parser.add_argument("--obs_dim",    type=int, default=19)
-    parser.add_argument("--action_dim", type=int, default=6)
+    parser.add_argument("--obs_dim",    type=int, default=24)
+    parser.add_argument("--action_dim", type=int, default=7)
     parser.add_argument("--device",     type=str, default="cuda:0")
     parser.add_argument("--control_hz", type=float, default=15.0)
     parser.add_argument("--visualize",  action="store_true", default=False)
@@ -193,6 +188,18 @@ def load_replay_target_pose(replay_data: pd.DataFrame, step_idx: int) -> np.ndar
     return row[pose_cols].to_numpy(dtype=np.float32)
 
 
+def load_replay_success_pred(replay_data: pd.DataFrame, step_idx: int) -> np.ndarray:
+    """CSV에서 raw_action_6 (success prediction) 을 numpy array (1,) 로 반환.
+
+    --pose 모드에서 send_action 으로 전달할 success_prediction placeholder 로 사용한다.
+    raw_action_6 컬럼이 없으면 0.0 을 사용한다.
+    """
+    if "raw_action_6" not in replay_data.columns:
+        return np.array([0.0], dtype=np.float32)
+    val = float(replay_data.iloc[step_idx]["raw_action_6"])
+    return np.array([val], dtype=np.float32)
+
+
 def main():
     from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
     from lerobot_robot_fr3.fr3 import FR3Robot
@@ -233,8 +240,8 @@ def main():
     # 2. 로봇 연결
     # =================================================================
     print("[INFO] Connecting to Robot...")
-    config = FR3RobotConfig(use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion", arm_action_dim=args.action_dim)
-    robot = FR3Robot(config, task=args.task)
+    config = FR3RobotConfig(use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion", arm_action_dim=6)
+    robot = FR3Robot(config)
 
     try:
         robot.connect()
@@ -363,42 +370,49 @@ def main():
             if args.replay and args.pose:
                 action_dict = {
                     "arm_actions": target_pose_np.astype(np.float32),
-                    "gripper_actions": np.array([-1.0], dtype=np.float32),
+                    "success_prediction": load_replay_success_pred(replay_data, step_idx),
+                    "gripper_actions": np.array([0.0], dtype=np.float32),
                 }
-                processed_arm_action, _ = robot.send_action(action_dict, is_raw_action=False)
+                robot.send_action(action_dict, is_raw_action=False)
             else:
                 # 실시간 / replay --raw 공통: model이 만든 raw 7-vec을 처리해 보낸다.
-                arm_action_np = action_np[:args.action_dim].copy()
+                arm_action_np = action_np[:6].copy()
                 action_dict = {
                     "arm_actions": arm_action_np,
-                    "gripper_actions": np.array([-1.0], dtype=np.float32),
+                    "success_prediction": action_np[6:],
+                    "gripper_actions": np.array([0.0], dtype=np.float32),
                 }
-                processed_arm_action, _ = robot.send_action(action_dict)
+                robot.send_action(action_dict)
             t4 = time.perf_counter()
 
             # --- 데이터 로깅 ---
             if args.save_path:
                 record_dict = robot.get_observation()
                 record = {
-                    # "fingertip_pos_rel_fixed_x": record_dict["fingertip_pos_rel_fixed"][0],
-                    # "fingertip_pos_rel_fixed_y": record_dict["fingertip_pos_rel_fixed"][1],
-                    # "fingertip_pos_rel_fixed_z": record_dict["fingertip_pos_rel_fixed"][2],
-                    # "fingertip_quat_w": record_dict["fingertip_quat"][0],
-                    # "fingertip_quat_x": record_dict["fingertip_quat"][1],
-                    # "fingertip_quat_y": record_dict["fingertip_quat"][2],
-                    # "fingertip_quat_z": record_dict["fingertip_quat"][3],
-                    # "ee_linvel_x": record_dict["ee_linvel"][0],
-                    # "ee_linvel_y": record_dict["ee_linvel"][1],
-                    # "ee_linvel_z": record_dict["ee_linvel"][2],
-                    # "ee_angvel_x": record_dict["ee_angvel"][0],
-                    # "ee_angvel_y": record_dict["ee_angvel"][1],
-                    # "ee_angvel_z": record_dict["ee_angvel"][2],
-                    # "prev_actions_0": record_dict["prev_actions"][0],
-                    # "prev_actions_1": record_dict["prev_actions"][1],
-                    # "prev_actions_2": record_dict["prev_actions"][2],
-                    # "prev_actions_3": record_dict["prev_actions"][3],
-                    # "prev_actions_4": record_dict["prev_actions"][4],
-                    # "prev_actions_5": record_dict["prev_actions"][5],
+                    "fingertip_pos_rel_fixed_x": record_dict["fingertip_pos_rel_fixed"][0],
+                    "fingertip_pos_rel_fixed_y": record_dict["fingertip_pos_rel_fixed"][1],
+                    "fingertip_pos_rel_fixed_z": record_dict["fingertip_pos_rel_fixed"][2],
+                    "fingertip_quat_w": record_dict["fingertip_quat"][0],
+                    "fingertip_quat_x": record_dict["fingertip_quat"][1],
+                    "fingertip_quat_y": record_dict["fingertip_quat"][2],
+                    "fingertip_quat_z": record_dict["fingertip_quat"][3],
+                    "ee_linvel_x": record_dict["ee_linvel"][0],
+                    "ee_linvel_y": record_dict["ee_linvel"][1],
+                    "ee_linvel_z": record_dict["ee_linvel"][2],
+                    "ee_angvel_x": record_dict["ee_angvel"][0],
+                    "ee_angvel_y": record_dict["ee_angvel"][1],
+                    "ee_angvel_z": record_dict["ee_angvel"][2],
+                    "force_threshold": record_dict["force_threshold"][0],
+                    # "ft_force_x": record_dict["ft_force"][0],
+                    # "ft_force_y": record_dict["ft_force"][1],
+                    # "ft_force_z": record_dict["ft_force"][2],
+                    "prev_actions_0": record_dict["prev_actions"][0],
+                    "prev_actions_1": record_dict["prev_actions"][1],
+                    "prev_actions_2": record_dict["prev_actions"][2],
+                    "prev_actions_3": record_dict["prev_actions"][3],
+                    "prev_actions_4": record_dict["prev_actions"][4],
+                    "prev_actions_5": record_dict["prev_actions"][5],
+                    "prev_actions_6": record_dict["prev_actions"][6],
 
                     "ee_pos_x": robot.robot_state_manager.ee_pos[0],
                     "ee_pos_y": robot.robot_state_manager.ee_pos[1],
@@ -408,16 +422,45 @@ def main():
                     "ee_quat_y": robot.robot_state_manager.ee_quat[2],
                     "ee_quat_z": robot.robot_state_manager.ee_quat[3],
 
-                    "target_pos_x": processed_arm_action[0],
-                    "target_pos_y": processed_arm_action[1],
-                    "target_pos_z": processed_arm_action[2],
-                    "target_quat_w": processed_arm_action[6],
-                    "target_quat_x": processed_arm_action[3],
-                    "target_quat_y": processed_arm_action[4],
-                    "target_quat_z": processed_arm_action[5],
+                    "target_pos_x": robot.processed_arm_action[0],
+                    "target_pos_y": robot.processed_arm_action[1],
+                    "target_pos_z": robot.processed_arm_action[2],
+                    "target_quat_w": robot.processed_arm_action[6],
+                    "target_quat_x": robot.processed_arm_action[3],
+                    "target_quat_y": robot.processed_arm_action[4],
+                    "target_quat_z": robot.processed_arm_action[5],
                 }
 
                 log_data.append(record)
+
+            # # VLA State
+            # if "state.eef_position" in vla_obs_dict:
+            #     for i in range(3): record[f"vla/state.eef_position_{i}"] = float(vla_obs_dict["state.eef_position"][i])
+            # if "state.eef_quaternion" in vla_obs_dict:
+            #     for i in range(4): record[f"vla/state.eef_quaternion_{i}"] = float(vla_obs_dict["state.eef_quaternion"][i])
+            # if "state.gripper_qpos" in vla_obs_dict:
+            #     for i in range(2): record[f"vla/state.gripper_qpos_{i}"] = float(vla_obs_dict["state.gripper_qpos"][i])
+
+            # # --- E. 카메라 시각화 ---
+            # if args.visualize:
+            #     panels = []
+            #     for key in ["wrist", "left", "right"]:
+            #         obs_key = f"video.{key}_view"
+            #         if obs_key in vla_obs_dict:
+            #             frame = vla_obs_dict[obs_key]
+            #             if frame.ndim == 4: frame = frame[0]
+            #             bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            #             label = key
+            #         else:
+            #             bgr = np.zeros((config.cameras[key].height, config.cameras[key].width, 3), dtype=np.uint8)
+            #             label = f"{key} (no frame)"
+            #         cv2.putText(bgr, label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2, cv2.LINE_AA)
+            #         panels.append(bgr)
+
+            #     cv2.imshow("FR3 Multi-Camera Viewer", np.hstack(panels))
+            #     if cv2.waitKey(1) & 0xFF == ord("q"):
+            #         print("\n[INFO] 'q' pressed. Exiting.")
+            #         break
 
             # --- F. 주기 유지 ---
             elapsed = time.time() - t_start

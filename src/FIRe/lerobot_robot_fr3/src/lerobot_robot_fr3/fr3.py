@@ -1,6 +1,6 @@
 import threading
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 import numpy as np
 
 import rclpy
@@ -17,32 +17,40 @@ try:
     from cho_interfaces.msg import ActionChunk
 except ImportError:
     raise ImportError(
-        "cho_interfaces 패키지를 찾을 수 없습니다. "
-        "ROS 2 워크스페이스를 source 했는지 확인하세요."
+        "cho_interfaces package is not found. Please make sure it is built and sourced properly. "
+        "Please source your ROS 2 workspace."
     )
 
 from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.robots import Robot
 from .config_fr3 import FR3RobotConfig
-from .utils import RobotStateManager, CameraSensorManager, FTSensorManager
-from lerobot_ft_sensor.ft_sensor import FTSensor
-from .utils.math_utils import (
-    quat_from_angle_axis,
-    quat_mul,
-    get_euler_xyz,
-    quat_from_euler_xyz,
-    _wxyz_to_xyzw,
-)
+from .utils import RobotStateManager
+from .utils.math_utils import _wxyz_to_xyzw
+from .tasks import Task
 
 
 class FR3Robot(Robot):
     config_class = FR3RobotConfig
     name = "fr3_vla"
 
-    def __init__(self, config: FR3RobotConfig):
+    def __init__(self, config: FR3RobotConfig, task: str):
         super().__init__(config)
         self.config = config
-        
+        if task == "factory-peg_insert":
+            from .tasks.factory.factory import Factory
+            self.task = Factory(name="peg_insert")
+        elif task == "factory-gear_mesh":
+            from .tasks.factory.factory import Factory
+            self.task = Factory(name="gear_mesh")
+        elif task == "factory-nut_thread":
+            from .tasks.factory.factory import Factory
+            self.task = Factory(name="nut_thread")
+        elif task == "reach":
+            from .tasks.reach.reach import Reach
+            self.task = Reach(name="reach")
+        else:
+            raise ValueError(f"Unknown task name: {task}")
+
         self.node = None
         self.executor_thread = None
         self._is_connected = False
@@ -54,26 +62,6 @@ class FR3Robot(Robot):
         
         # update robot state & can get robot state from this
         self.robot_state_manager = None
-
-        self.actions = np.zeros((7,), dtype=np.float32)  # 6 for arm, 1 for success prediction
-        self.prev_actions = None
-        ema_lower, ema_upper = 0.025, 0.1
-        self.ema_factor = ema_lower + 0.5 * (ema_upper - ema_lower)
-
-        height, base_height = 0.025, 0.0  # hole
-        # height, base_height = 0.02, 0.005  # gear
-        # height, base_height = 0.025, 0.01  # bolt
-        
-        fixed_tip_pos_local = np.zeros(3, dtype=np.float32)
-        fixed_tip_pos_local[2] += (height + base_height)
-        # if task == "gear_mesh":
-        #     fixed_tip_pos_local[0] = medium_gear_base_offset[0]
-
-        fixed_pos = np.array([0.6, 0.0, 0.05])
-        fixed_quat = np.array([1.0, 0.0, 0.0, 0.0])
-
-        fixed_tip_pos = fixed_pos + fixed_tip_pos_local
-        self.fixed_pos_obs_frame = fixed_tip_pos
 
     @property
     def is_connected(self) -> bool:
@@ -103,10 +91,7 @@ class FR3Robot(Robot):
         self.action_cb_group = ReentrantCallbackGroup()
 
         self.robot_state_manager = RobotStateManager(self.node)
-        # self.camera_sensor_manager = CameraSensorManager(self.node, self.config.cameras, fps=30.0)
-        # self.ft_sensor_manager = FTSensorManager(
-        #     node=self.node, config=self.config.ft_sensor
-        # )
+        self.task.allocate_robot(self.robot_state_manager)
 
         self.pub_action_chunk = self.node.create_publisher(
             ActionChunk, self.config.action_topic, 10
@@ -141,13 +126,7 @@ class FR3Robot(Robot):
         else:
             print("Warning: Did not receive EE pose (TF transform) within timeout.")
 
-        # # connect to ft sensor
-        # self.ft_sensor_manager.connect()
-
-        # # connect to cameras
-        # self.camera_sensor_manager.connect()
-
-        self.reset()
+        self.task.reset()
 
         self._is_connected = True
         print(f"[{self.name}] VLA Client Connected and Ready!")
@@ -194,44 +173,11 @@ class FR3Robot(Robot):
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
         
-        contact_lower, contact_upper = [5.0, 10.0]
-        contact_penalty_thresholds = np.array([
-            contact_lower + 0.5 * (contact_upper - contact_lower)
-        ])
-
-        prev_actions = self.actions.copy()
-        prev_actions[3:5] = 0.0
-
-        obs_dict = {}
-        # obs_dict["fingertip_pos"] = self.robot_state_manager.ee_pos
-        obs_dict["fingertip_pos_rel_fixed"] = self.robot_state_manager.ee_pos - self.fixed_pos_obs_frame
-        obs_dict["fingertip_quat"] = self.robot_state_manager.ee_quat
-        obs_dict["ee_linvel"] = self.robot_state_manager.ee_linvel
-        obs_dict["ee_angvel"] = self.robot_state_manager.ee_angvel
-        obs_dict["force_threshold"] = contact_penalty_thresholds
-        # TODO: smooth and transform using forge code
-        # obs_dict["ft_force"] = self.ft_sensor_manager.force
-        obs_dict["prev_actions"] = prev_actions
+        obs_dict = self.task.get_observation()
 
         return obs_dict
-    
-    def get_vla_observation(self) -> Dict[str, Any]:
-        if not self.is_connected:
-            raise ConnectionError(f"{self.name} is not connected.")
-        
-        obs_dict = {}
-        # for cam_key, cam_data in self.camera_sensor_manager.data.items():
-        #     obs_dict[f"video.{cam_key}_view"] = cam_data
 
-        obs_dict["state.eef_position"] = self.robot_state_manager.ee_pos
-        obs_dict["state.eef_quaternion"] = self.robot_state_manager.ee_quat
-        obs_dict["state.gripper_qpos"] = np.array([
-            self.robot_state_manager.joint_states["position"][7], self.robot_state_manager.joint_states["position"][7]
-        ])
-        
-        return obs_dict
-
-    def send_action(self, action: Dict[str, Any], is_raw_action: bool = True) -> Dict[str, Any]:
+    def send_action(self, action: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
 
@@ -239,49 +185,25 @@ class FR3Robot(Robot):
             self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
             return action
         
-        if is_raw_action:
-            self.actions[0:6] = self.ema_factor * action["arm_actions"].copy() + (1 - self.ema_factor) * self.actions[0:6]
-            self.actions[6] = self.ema_factor * action["success_prediction"].copy() + (1 - self.ema_factor) * self.actions[6]
-            # self.actions[0:6] = action["arm_actions"].copy()
-            # self.actions[6] = action["success_prediction"].copy()
-        
-            processed_arm_action = self._process_action()
-            # convert quaternion data from wxyz to xyzw
-            processed_arm_action[3:7] = _wxyz_to_xyzw(processed_arm_action[3:7])
-            arm_action_np = np.array(processed_arm_action).reshape(-1)
-        else:
-            processed_arm_action = action["arm_actions"]
-            processed_arm_action[3:7] = _wxyz_to_xyzw(processed_arm_action[3:7])
-            arm_action_np = np.array(processed_arm_action).reshape(-1)
+        arm_action = self.task.get_arm_action(action)
+        gripper_action = self.task.get_gripper_action(action)
 
-        # for saving
-        self.processed_arm_action = processed_arm_action
+        processed_arm_action, processed_gripper_action = self.task.process_action(arm_action, gripper_action)
         
-        gripper_action_np = np.array(action.get("gripper_actions", [])).reshape(-1)
-        chunk_size = len(arm_action_np) // self.config.arm_action_dim
+        self.apply_action(processed_arm_action, processed_gripper_action)
 
-        msg = ActionChunk()
-        # 헤더 시간 및 프레임 명시 (Tester 참고)
-        msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
-        msg.action_space = self.config.action_space
-        msg.relative = self.config.is_relative
-        msg.rotation_type = self.config.rotation_type
-        msg.chunk_size = chunk_size
-        
-        msg.arm_actions = arm_action_np.tolist()
-        msg.gripper_actions = gripper_action_np.tolist()
+        return processed_arm_action, processed_gripper_action
 
+    def apply_action(
+        self, processed_arm_action: np.ndarray, processed_gripper_action: np.ndarray = None
+    ) -> None:
+        msg = self.wrap_action_to_msg(processed_arm_action, processed_gripper_action)
+        # send action chunk message to VLA Action Server
         self.pub_action_chunk.publish(msg)
-
-        self.prev_actions = self.actions.copy()
-        return action
 
     def disconnect(self) -> None:
         if not self.is_connected:
             return
-
-        # self.camera_sensor_manager.disconnect()
-        # self.ft_sensor_manager.disconnect()
 
         print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
         trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')
@@ -326,45 +248,13 @@ class FR3Robot(Robot):
         self._is_connected = False
         print(f"[{self.name}] Disconnected.")
 
-    # @property
-    # def _cameras_ft(self) -> Dict[str, tuple]:
-    #     return {
-    #         f"video.{name}_view": self.camera_sensor_manager.shapes[name] for name in self.camera_sensor_manager.names
-    #     }
-
     @property
     def observation_features(self) -> dict[str, tuple]:
-        
-        features = {
-            # "fingertip_pos": (3,),
-            "fingertip_pos_rel_fixed": (3,),
-            "fingertip_quat": (4,),
-            "ee_linvel": (3,),
-            "ee_angvel": (3,),
-            "force_threshold": (1,),
-            "ft_force": (3,),
-            # "prev_actions": (6,),
-            "prev_actions": (7,)
-        }
-
-        return features
-    
-    @property
-    def vla_observation_features(self) -> dict[str, tuple]:
-        features = {
-            # **self._cameras_ft,
-            "state.eef_position": (3,),
-            "state.eef_quaternion": (4,),
-            "state.gripper_qpos": (2,),
-        }
-        return features
+        return self.task.observation_features
 
     @property
     def action_features(self) -> dict[str, tuple]:
-        return {
-            "arm_actions": (self.config.arm_action_dim,),
-            "gripper_actions": (1,)
-        }
+        return self.task.action_features
     
     @property
     def is_calibrated(self) -> bool:
@@ -376,110 +266,19 @@ class FR3Robot(Robot):
     def configure(self) -> None:
         pass
 
-    def _process_action(self):
-        # Step (0): Scale actions to allowed range.
-        self.actions[0:6] = 0.0
-        self.actions[2] = -1.0
-        self.actions[0] = 1.0
+    def wrap_action_to_msg(self, arm_action: np.ndarray, gripper_action: np.ndarray = None) -> ActionChunk:
 
-        pos_action = self.actions[0:3] * np.array([0.05, 0.05, 0.05])
-        rot_action = self.actions[3:6] * np.array([1.0, 1.0, 1.0])
+        arm_action[3:7] = _wxyz_to_xyzw(arm_action[3:7])
+        gripper_action = gripper_action if gripper_action is not None else np.array([])
+        
+        msg = ActionChunk()
+        msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
+        msg.action_space = self.config.action_space
+        msg.relative = self.config.is_relative
+        msg.rotation_type = self.config.rotation_type
+        msg.chunk_size = len(arm_action) // self.config.arm_action_dim
 
-        # Step (1): Compute desired pose targets in EE frame.
-        # (1.a) Position. Action frame is assumed to be the top of the bolt (noisy estimate).
-        fixed_pos_action_frame = self.fixed_pos_obs_frame
-        ctrl_target_preclipped_pos = fixed_pos_action_frame + pos_action
-        # (1.b) Enforce rotation action constraints.
-        rot_action[0:2] = 0.0
+        msg.arm_actions = arm_action.tolist()
+        msg.gripper_actions = gripper_action.tolist()
 
-        # Assumes joint limit is in (+x, -y)-quadrant of world frame.
-        rot_action[2] = np.deg2rad(-180.0) + np.deg2rad(270.0) * (rot_action[2] + 1.0) / 2.0  # Joint limit.
-        # (1.c) Get desired orientation target.
-        bolt_frame_quat = quat_from_euler_xyz(
-            roll=rot_action[0], pitch=rot_action[1], yaw=rot_action[2]
-        )
-
-        quat_bolt_to_ee = quat_from_euler_xyz(
-            roll=np.pi, pitch=0.0, yaw=0.0
-        )
-
-        ctrl_target_preclipped_quat = quat_mul(quat_bolt_to_ee, bolt_frame_quat)
-
-        # Step (2): Clip targets if they are too far from current EE pose.
-        # (2.a): Clip position targets.
-        delta_pos = ctrl_target_preclipped_pos - self.robot_state_manager.ee_pos
-        pos_error_clipped = np.clip(
-            delta_pos, -0.02, 0.02
-        )
-        ctrl_target_pos = self.robot_state_manager.ee_pos + pos_error_clipped
-
-        # (2.b) Clip orientation targets. Use Euler angles. We assume we are near upright, so
-        # clipping yaw will effectively cause slow motions. When we clip, we also need to make
-        # sure we avoid the joint limit.
-
-        # (2.b.i) Get current and desired Euler angles.
-        curr_roll, curr_pitch, curr_yaw = get_euler_xyz(self.robot_state_manager.ee_quat)
-        desired_roll, desired_pitch, desired_yaw = get_euler_xyz(ctrl_target_preclipped_quat)
-        desired_xyz = np.array([desired_roll, desired_pitch, desired_yaw])
-
-        # (2.b.ii) Correct the direction of motion to avoid joint limit.
-        # Map yaws between [-125, 235] degrees
-        # (so that angles appear on a continuous span uninterrupted by the joint limit)
-        curr_yaw = np.where(curr_yaw > np.deg2rad(235), curr_yaw - 2 * np.pi, curr_yaw)
-        desired_yaw = np.where(desired_yaw > np.deg2rad(235), desired_yaw - 2 * np.pi, desired_yaw)
-
-        # (2.b.iii) Clip motion in the correct direction.
-        delta_yaw = desired_yaw - curr_yaw
-        clipped_yaw = np.clip(delta_yaw, -0.097, 0.097)
-        desired_xyz[2] = curr_yaw + clipped_yaw
-
-        # (2.b.iv) Clip roll and pitch.
-        desired_roll = np.where(desired_roll < 0.0, desired_roll + 2 * np.pi, desired_roll)
-        desired_pitch = np.where(desired_pitch < 0.0, desired_pitch + 2 * np.pi, desired_pitch)
-
-        delta_roll = desired_roll - curr_roll
-        clipped_roll = np.clip(delta_roll, -0.097, 0.097)
-        desired_xyz[0] = curr_roll + clipped_roll
-
-        curr_pitch = np.where(curr_pitch > np.pi, curr_pitch - 2 * np.pi, curr_pitch)
-        desired_pitch = np.where(desired_pitch > np.pi, desired_pitch - 2 * np.pi, desired_pitch)
-
-        delta_pitch = desired_pitch - curr_pitch
-        clipped_pitch = np.clip(delta_pitch, -0.097, 0.097)
-        desired_xyz[1] = curr_pitch + clipped_pitch
-
-        ctrl_target_quat = quat_from_euler_xyz(
-            roll=desired_xyz[0], pitch=desired_xyz[1], yaw=desired_xyz[2]
-        )
-
-        return np.concatenate([ctrl_target_pos, ctrl_target_quat])
-
-    def reset(self) -> None:
-        self.actions = np.zeros_like(self.actions)
-        self.prev_actions = np.zeros_like(self.actions)
-
-        # Compute initial action for correct EMA computation.
-        fixed_pos_action_frame = self.fixed_pos_obs_frame
-        pos_action = self.robot_state_manager.ee_pos - fixed_pos_action_frame
-        pos_action_bound = 0.05
-        pos_action = pos_action / pos_action_bound
-        self.actions[0:3] = self.prev_actions[0:3] = pos_action
-
-        # Relative yaw to bolt.
-        unrot_180_euler = -np.pi
-        unrot_quat = quat_from_euler_xyz(
-            roll=unrot_180_euler, pitch=0.0, yaw=0.0
-        )
-
-        fingertip_quat_rel_bolt = quat_mul(unrot_quat, self.robot_state_manager.ee_quat)
-        fingertip_yaw_bolt = get_euler_xyz(fingertip_quat_rel_bolt)[-1]
-        fingertip_yaw_bolt = np.where(
-            fingertip_yaw_bolt > np.pi / 2, fingertip_yaw_bolt - 2 * np.pi, fingertip_yaw_bolt
-        )
-        fingertip_yaw_bolt = np.where(
-            fingertip_yaw_bolt < -np.pi, fingertip_yaw_bolt + 2 * np.pi, fingertip_yaw_bolt
-        )
-
-        yaw_action = (fingertip_yaw_bolt + np.deg2rad(180.0)) / np.deg2rad(270.0) * 2.0 - 1.0
-        self.actions[5] = self.prev_actions[5] = yaw_action
-        self.actions[6] = self.prev_actions[6] = -1.0
+        return msg
