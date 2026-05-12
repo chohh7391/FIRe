@@ -36,17 +36,14 @@ conda activate sam3
 python scripts/run_vision_server.py
 ```
 
-- test robot
+- run model
 ```bash
-source ~/ros2_ws/install/setup.bash
-conda activate fire
-python test/test_lerobot_robot_fr3.py
+python scripts/play.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --cfg <CONFIG_PATH>
 ```
 
-- run model (test)
-```bash
-python scripts/play.py --checkpoint /home/home/FIRe/checkpoints/Forge/peg_insert/nn/Forge.pth --cfg /home/home/FIRe/scripts/configs/rl_games_ppo_cfg.yaml --use_sim_time --save_path /home/home/FIRe/logs/20260501 --replay /home/home/FIRe/logs/sim_data/forge_data.csv --raw
-```
+- plot data
+python scripts/plot_data.py --task <TASK_NAME> --sim <ISAACLAB_DATA> --real <COLLECTED_DATA> --save_path <FIG_SAVE_PATH>
+
 
 - for specific task
 ```bash
@@ -63,18 +60,7 @@ python scripts/run_vision_server.py --use_sam3 --target_object wristwatch
 source ~/ros2_ws/install/setup.bash
 ros2 launch cho_task_manager run_task_manager.launch.py task:=forge
 
-# # run model when VLACompletionWaiterBehavior is running
-# source ~/ros2_ws/install/setup.bash
-# python scripts/play.py \
-# --checkpoint checkpoints/Factory/test/nn/Factory.pth \
-# --cfg scripts/configs/rl_games_ppo_cfg.yaml \
-# --obs_dim 19 \
-# --action_dim 6 \
-# --device cuda:0
-
-python scripts/play.py --csv_path /home/home/FIRe/scripts/configs/traj_save.csv --hz 15.0
-
-# success feedback using gui
-source ~/ros2_ws/install/setup.bash
-python3 ~/ros2_ws/src/cho_robot_project/cho_task_manager/python/vla_success_gui.py
+# run model when VLACompletionWaiterBehavior is running
+```bash
+python scripts/play.py --task factory-peg_insert --checkpoint /home/home/FIRe/checkpoints/Factory/peg_insert/nn/Factory.pth --cfg /home/home/FIRe/scripts/configs/factory.yaml --replay /home/home/FIRe/logs/factory/csv/sim/raw.csv --raw --save_path /home/home/FIRe/logs/factory/csv/real
 ```

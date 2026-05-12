@@ -4,32 +4,81 @@ import time
 import torch
 import torch.multiprocessing as mp
 from multiprocessing import RawValue
+from typing import Dict, Tuple, List
 import numpy as np
 import cv2
 import pandas as pd
 import datetime
 import os
 
-OBS_KEYS_AND_DIM = [
-    ("fingertip_pos_rel_fixed", 3),
-    ("fingertip_quat", 4),
-    ("ee_linvel", 3),
-    ("ee_angvel", 3),
-    ("prev_actions", 6),
-]
-# OBS_KEYS_AND_DIM = [
-#     ("joint_pos", 9),
-#     ("joint_vel", 9),
-#     ("pose_command", 7),
-#     ("actions", 7),
-# ]
+
+# =================================================================
+# Feature helpers
+# observation_features / log_features 같은 Dict[str, Tuple[int, ...]]
+# 정의를 받아서 평탄화/컬럼명 생성/shared memory write를 일반화한다.
+# =================================================================
+def features_total_dim(features: Dict[str, Tuple[int, ...]]) -> int:
+    """features의 모든 항목 dim 합."""
+    return sum(int(np.prod(shape)) for shape in features.values())
 
 
-def write_obs_to_shm(obs_dict: dict, obs_buf: np.ndarray) -> None:
-    """obs_dict를 shared memory numpy buffer에 직접 씀.
+def features_to_flat_keys(features: Dict[str, Tuple[int, ...]]) -> List[str]:
+    """features 정의로부터 평탄화된 컬럼 이름 리스트를 만든다.
+    예) {"ee_pos": (3,)} → ["ee_pos_0", "ee_pos_1", "ee_pos_2"]
+    """
+    keys: List[str] = []
+    for name, shape in features.items():
+        dim = int(np.prod(shape))
+        for i in range(dim):
+            keys.append(f"{name}_{i}")
+    return keys
+
+
+def flatten_features(
+    data_dict: Dict[str, np.ndarray],
+    features: Dict[str, Tuple[int, ...]],
+) -> Dict[str, float]:
+    """features 정의에 맞춰 data_dict를 평탄화한 dict로 변환."""
+    flat: Dict[str, float] = {}
+    for key, shape in features.items():
+        arr = np.asarray(data_dict[key], dtype=np.float32).ravel()
+        dim = int(np.prod(shape))
+        if arr.size < dim:
+            raise ValueError(
+                f"'{key}' has {arr.size} elements, expected {dim}"
+            )
+        for i in range(dim):
+            flat[f"{key}_{i}"] = float(arr[i])
+    return flat
+
+
+def flatten_obs_to_indexed(
+    obs_dict: Dict[str, np.ndarray],
+    obs_features: Dict[str, Tuple[int, ...]],
+) -> Dict[str, float]:
+    """obs_features 순서대로 obs_dict를 이어 붙여 obs_0~N 형태로 반환.
+    --raw replay에서 읽는 컬럼명과 일치하도록 obs_? 인덱스로 저장한다."""
+    flat: Dict[str, float] = {}
+    idx = 0
+    for key, shape in obs_features.items():
+        arr = np.asarray(obs_dict[key], dtype=np.float32).ravel()
+        dim = int(np.prod(shape))
+        for i in range(dim):
+            flat[f"obs_{idx}"] = float(arr[i])
+            idx += 1
+    return flat
+
+
+def write_obs_to_shm(
+    obs_dict: dict,
+    obs_buf: np.ndarray,
+    obs_features: Dict[str, Tuple[int, ...]],
+) -> None:
+    """obs_features 정의 순서대로 obs_dict 값을 shared memory에 직접 쓴다.
     torch 변환 없이 순수 numpy slice write → GIL 최소화."""
     offset = 0
-    for key, dim in OBS_KEYS_AND_DIM:
+    for key, shape in obs_features.items():
+        dim = int(np.prod(shape))
         val = np.asarray(obs_dict[key], dtype=np.float32).ravel()
         obs_buf[offset:offset + dim] = val[:dim]
         offset += dim
@@ -131,8 +180,6 @@ def parse_args():
     parser.add_argument("--task", type=str, default="peg_insert")
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--cfg",        type=str, required=True)
-    parser.add_argument("--obs_dim",    type=int, default=19)
-    parser.add_argument("--action_dim", type=int, default=6)
     parser.add_argument("--device",     type=str, default="cuda:0")
     parser.add_argument("--control_hz", type=float, default=15.0)
     parser.add_argument("--visualize",  action="store_true", default=False)
@@ -176,16 +223,17 @@ def load_replay_obs(replay_data: pd.DataFrame, step_idx: int, obs_dim: int) -> n
     return row[obs_cols].to_numpy(dtype=np.float32)
 
 
-def load_replay_target_pose(replay_data: pd.DataFrame, step_idx: int) -> np.ndarray:
-    """CSV에서 target_pos_x/y/z + target_quat_w/x/y/z 컬럼 (총 7개) 을 numpy array로 반환.
+def load_replay_target_pose(
+    replay_data: pd.DataFrame,
+    step_idx: int,
+    pose_cols: List[str],
+) -> np.ndarray:
+    """CSV에서 target_pos_* + target_quat_* 컬럼(총 7개)을 numpy array로 반환.
 
-    반환 shape: (7,) → [pos_x, pos_y, pos_z, quat_w, quat_x, quat_y, quat_z]
+    반환 shape: (7,) → [pos_0, pos_1, pos_2, quat_0, quat_1, quat_2, quat_3]
+    quat 순서는 task의 log_features 정의(quat = [w, x, y, z])를 따른다.
     """
     row = replay_data.iloc[step_idx]
-    pose_cols = [
-        "target_pos_x", "target_pos_y", "target_pos_z",
-        "target_quat_w", "target_quat_x", "target_quat_y", "target_quat_z",
-    ]
     missing = [c for c in pose_cols if c not in replay_data.columns]
     if missing:
         raise KeyError(f"[REPLAY] CSV에 다음 컬럼이 없습니다: {missing}")
@@ -203,10 +251,30 @@ def main():
     needs_inference = not (args.replay and args.pose)
 
     # =================================================================
-    # 1. Shared memory + spin-wait 플래그 + Inference 프로세스 시작
+    # 1. Robot 객체 생성 → connect() 전에 task features로 dim 계산
+    #    (task는 __init__에서 생성되므로 connect() 없이도 접근 가능)
     # =================================================================
-    obs_shm    = torch.zeros(1, args.obs_dim).share_memory_()
-    action_shm = torch.zeros(1, args.action_dim).share_memory_()
+    config = FR3RobotConfig(
+        use_sim_time=args.use_sim_time, is_relative=False,
+        rotation_type="quaternion",
+    )
+    robot = FR3Robot(config, task=args.task)
+
+    obs_features   = robot.task.observation_features
+    action_features = robot.task.action_features
+    log_features   = robot.task.log_features
+
+    obs_dim    = features_total_dim(obs_features)
+    # action_features는 arm_actions + gripper_actions를 포함하므로 arm만 사용
+    action_dim = features_total_dim({"arm_actions": action_features["arm_actions"]})
+
+    print(f"[INFO] obs_dim={obs_dim}, action_dim={action_dim} (from task.features)")
+
+    # =================================================================
+    # 2. Shared memory + spin-wait 플래그 + Inference 프로세스 시작
+    # =================================================================
+    obs_shm    = torch.zeros(1, obs_dim).share_memory_()
+    action_shm = torch.zeros(1, action_dim).share_memory_()
     obs_flag    = RawValue(ctypes.c_int32, 0)
     action_flag = RawValue(ctypes.c_int32, 0)
     stop_event  = mp.Event()
@@ -216,7 +284,7 @@ def main():
         infer_proc = mp.Process(
             target=run_inference_process,
             args=(obs_shm, action_shm, obs_flag, action_flag, stop_event,
-                  args.checkpoint, args.cfg, args.obs_dim, args.action_dim, args.device),
+                  args.checkpoint, args.cfg, obs_dim, action_dim, args.device),
             daemon=True,
         )
         infer_proc.start()
@@ -230,11 +298,9 @@ def main():
         print("[INFO] --replay --pose 모드: inference 프로세스를 시작하지 않습니다.")
 
     # =================================================================
-    # 2. 로봇 연결
+    # 3. 로봇 연결
     # =================================================================
     print("[INFO] Connecting to Robot...")
-    config = FR3RobotConfig(use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion", arm_action_dim=args.action_dim)
-    robot = FR3Robot(config, task=args.task)
 
     try:
         robot.connect()
@@ -253,25 +319,36 @@ def main():
         return
 
     # =================================================================
-    # 3. CSV 데이터 로드 및 컬럼 검증
+    # 4. CSV 데이터 로드 및 컬럼 검증
     # =================================================================
     replay_data = None
+    # --pose에서 사용할 target pose 컬럼명 (log_features 기반)
+    pose_cols_for_replay: List[str] = (
+        features_to_flat_keys({"target_pos": log_features["target_pos"]})
+        + features_to_flat_keys({"target_quat": log_features["target_quat"]})
+    ) if ("target_pos" in log_features and "target_quat" in log_features) else []
+
     if args.replay:
         print(f"[INFO] Loading CSV: {args.replay}")
         replay_data = pd.read_csv(args.replay)
         print(f"[INFO] Loaded {len(replay_data)} steps from CSV.")
 
         if args.raw:
-            # --raw: obs_0 ~ obs_{obs_dim-1} 컬럼 검증
-            expected_cols = [f"obs_{i}" for i in range(args.obs_dim)]
-            mode_label = f"obs_0 ~ obs_{args.obs_dim - 1}"
+            # obs 컬럼은 observation_features 평탄화 키와 동일
+            expected_cols = [f"obs_{i}" for i in range(obs_dim)]
+            mode_label = f"obs_0 ~ obs_{obs_dim - 1}"
         else:  # args.pose
-            # --pose: target_pos / target_quat 컬럼 검증
-            expected_cols = [
-                "target_pos_x", "target_pos_y", "target_pos_z",
-                "target_quat_w", "target_quat_x", "target_quat_y", "target_quat_z",
-            ]
-            mode_label = "target_pos_*, target_quat_*"
+            if not pose_cols_for_replay:
+                print(
+                    "[ERROR] --pose 모드는 task.log_features에 "
+                    "'target_pos'와 'target_quat'가 필요합니다."
+                )
+                stop_event.set()
+                if infer_proc is not None:
+                    infer_proc.join(timeout=3)
+                return
+            expected_cols = pose_cols_for_replay
+            mode_label = ", ".join(expected_cols)
 
         missing_cols = [c for c in expected_cols if c not in replay_data.columns]
         if missing_cols:
@@ -289,9 +366,9 @@ def main():
     step_idx = 0
     obs_buf = obs_shm.numpy()[0]
 
-    log_data = []
+    log_data: List[dict] = []
 
-    print(f"\n[INFO] Starting control loop at {args.control_hz} Hz. Ctrl+C or 'q' to stop.")
+    print(f"\n[INFO] Starting control loop at {args.control_hz} Hz. Ctrl+C to stop.")
 
     try:
         while True:
@@ -301,23 +378,17 @@ def main():
             t0 = time.perf_counter()
 
             if args.replay and args.raw:
-                # -------------------------------------------------------
-                # Replay --raw 모드: CSV의 obs_0~obs_N을 직접 shared memory에 씀
-                # write_obs_to_shm을 거치지 않고 바로 obs_buf에 복사
-                # -------------------------------------------------------
+                # Replay --raw: CSV의 obs_0~obs_N을 직접 shared memory에 씀
                 if step_idx >= len(replay_data):
                     print("\n[INFO] Replay CSV finished.")
                     break
 
-                obs_buf[:] = load_replay_obs(replay_data, step_idx, args.obs_dim)
-                obs_dict = None  # replay --raw 모드에서는 obs_dict 불필요
+                obs_buf[:] = load_replay_obs(replay_data, step_idx, obs_dim)
+                obs_dict = None
                 print(f"[REPLAY-RAW] step {step_idx + 1}/{len(replay_data)}", end='\r')
 
             elif args.replay and args.pose:
-                # -------------------------------------------------------
-                # Replay --pose 모드: obs 없음. inference도 안 함.
-                # CSV의 target_pos/quat을 그대로 send_action에 전달한다.
-                # -------------------------------------------------------
+                # Replay --pose: obs 없음. inference도 안 함.
                 if step_idx >= len(replay_data):
                     print("\n[INFO] Replay CSV finished.")
                     break
@@ -326,30 +397,24 @@ def main():
                 print(f"[REPLAY-POSE] step {step_idx + 1}/{len(replay_data)}", end='\r')
 
             else:
-                # -------------------------------------------------------
                 # 실시간 모드: 로봇에서 observation 수집
-                # -------------------------------------------------------
                 obs_dict = robot.get_observation()
 
             t1 = time.perf_counter()
 
-            # # 시각화 / VLA state 저장용 (replay 모드에서도 실제 로봇 상태 기록)
-            # vla_obs_dict = robot.get_vla_observation()
-
-            # --- B. Obs → shared memory (실시간 모드만 write_obs_to_shm 사용) ---
+            # --- B. Obs → shared memory (실시간 모드만) ---
             if not args.replay:
-                write_obs_to_shm(obs_dict, obs_buf)
-            # replay --raw 모드는 이미 A 단계에서 obs_buf에 직접 썼으므로 skip
+                write_obs_to_shm(obs_dict, obs_buf, obs_features)
+            # replay --raw 모드는 A 단계에서 obs_buf에 직접 썼으므로 skip
             # replay --pose 모드는 obs / inference 자체가 없으므로 skip
             t2 = time.perf_counter()
 
             # --- C. Action 결정 ---
-            #   * 실시간 / replay --raw: inference 프로세스를 통해 action 계산
-            #   * replay --pose       : CSV에서 target_pos/quat을 직접 로드
             if args.replay and args.pose:
-                # CSV의 target pose를 그대로 사용. inference 우회.
-                target_pose_np = load_replay_target_pose(replay_data, step_idx)
-                action_np = None  # 아래 D 단계에서 분기 처리
+                target_pose_np = load_replay_target_pose(
+                    replay_data, step_idx, pose_cols_for_replay
+                )
+                action_np = None
             else:
                 obs_flag.value = 1
                 while action_flag.value == 0:
@@ -367,8 +432,7 @@ def main():
                 }
                 processed_arm_action, _ = robot.send_action(action_dict, is_raw_action=False)
             else:
-                # 실시간 / replay --raw 공통: model이 만든 raw 7-vec을 처리해 보낸다.
-                arm_action_np = action_np[:args.action_dim].copy()
+                arm_action_np = action_np[:action_dim].copy()
                 action_dict = {
                     "arm_actions": arm_action_np,
                     "gripper_actions": np.array([-1.0], dtype=np.float32),
@@ -376,46 +440,16 @@ def main():
                 processed_arm_action, _ = robot.send_action(action_dict)
             t4 = time.perf_counter()
 
-            # --- 데이터 로깅 ---
+            # --- E. 데이터 로깅 (features 기반 자동화) ---
             if args.save_path:
-                record_dict = robot.get_observation()
-                record = {
-                    # "fingertip_pos_rel_fixed_x": record_dict["fingertip_pos_rel_fixed"][0],
-                    # "fingertip_pos_rel_fixed_y": record_dict["fingertip_pos_rel_fixed"][1],
-                    # "fingertip_pos_rel_fixed_z": record_dict["fingertip_pos_rel_fixed"][2],
-                    # "fingertip_quat_w": record_dict["fingertip_quat"][0],
-                    # "fingertip_quat_x": record_dict["fingertip_quat"][1],
-                    # "fingertip_quat_y": record_dict["fingertip_quat"][2],
-                    # "fingertip_quat_z": record_dict["fingertip_quat"][3],
-                    # "ee_linvel_x": record_dict["ee_linvel"][0],
-                    # "ee_linvel_y": record_dict["ee_linvel"][1],
-                    # "ee_linvel_z": record_dict["ee_linvel"][2],
-                    # "ee_angvel_x": record_dict["ee_angvel"][0],
-                    # "ee_angvel_y": record_dict["ee_angvel"][1],
-                    # "ee_angvel_z": record_dict["ee_angvel"][2],
-                    # "prev_actions_0": record_dict["prev_actions"][0],
-                    # "prev_actions_1": record_dict["prev_actions"][1],
-                    # "prev_actions_2": record_dict["prev_actions"][2],
-                    # "prev_actions_3": record_dict["prev_actions"][3],
-                    # "prev_actions_4": record_dict["prev_actions"][4],
-                    # "prev_actions_5": record_dict["prev_actions"][5],
+                # obs 부분: 실시간 모드면 이미 받은 obs_dict 재사용,
+                #          replay 모드면 실제 로봇 상태로 새로 받아온다.
+                obs_for_log = obs_dict if obs_dict is not None else robot.get_observation()
+                record = flatten_obs_to_indexed(obs_for_log, obs_features)
 
-                    "ee_pos_x": robot.robot_state_manager.ee_pos[0],
-                    "ee_pos_y": robot.robot_state_manager.ee_pos[1],
-                    "ee_pos_z": robot.robot_state_manager.ee_pos[2],
-                    "ee_quat_w": robot.robot_state_manager.ee_quat[0],
-                    "ee_quat_x": robot.robot_state_manager.ee_quat[1],
-                    "ee_quat_y": robot.robot_state_manager.ee_quat[2],
-                    "ee_quat_z": robot.robot_state_manager.ee_quat[3],
-
-                    "target_pos_x": processed_arm_action[0],
-                    "target_pos_y": processed_arm_action[1],
-                    "target_pos_z": processed_arm_action[2],
-                    "target_quat_w": processed_arm_action[6],
-                    "target_quat_x": processed_arm_action[3],
-                    "target_quat_y": processed_arm_action[4],
-                    "target_quat_z": processed_arm_action[5],
-                }
+                # log 부분: task.get_log() 에 위임
+                log_dict = robot.task.get_log()
+                record.update(flatten_features(log_dict, log_features))
 
                 log_data.append(record)
 
@@ -424,12 +458,6 @@ def main():
             sleep_t = dt - elapsed
             if sleep_t > 0:
                 time.sleep(sleep_t)
-
-            print(
-                f"[TIMING] obs={1000*(t1-t0):.1f}ms | build={1000*(t2-t1):.1f}ms | "
-                f"infer={1000*(t3-t2):.1f}ms | send={1000*(t4-t3):.1f}ms | total={1000*(t4-t0):.1f}ms",
-                end='\r'
-            )
 
             step_idx += 1
 

@@ -40,6 +40,9 @@ class Factory(Task):
         
         self.pos_threshold = np.array(self.ctrl_cfg.pos_action_threshold, dtype=np.float32)
         self.rot_threshold = np.array(self.ctrl_cfg.rot_action_threshold, dtype=np.float32)
+
+        self.ctrl_target_fingertip_midpoint_pos = np.zeros(3, dtype=np.float32)
+        self.ctrl_target_fingertip_midpoint_quat = np.array([1, 0, 0, 0], dtype=np.float32)
     
     def reset(self):
         fixed_tip_pos_local = np.zeros(3, dtype=np.float32)
@@ -69,6 +72,14 @@ class Factory(Task):
     def get_gripper_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
         return action["gripper_actions"]
     
+    def get_log(self) -> Dict[str, np.ndarray]:
+        return {
+            "ee_pos": self.robot.ee_pos,
+            "ee_quat": self.robot.ee_quat,
+            "target_pos": self.ctrl_target_fingertip_midpoint_pos,
+            "target_quat": self.ctrl_target_fingertip_midpoint_quat,
+        }
+    
     @property
     def observation_features(self) -> Dict[str, Tuple[int, ...]]:
         return {
@@ -86,6 +97,15 @@ class Factory(Task):
             "gripper_actions": (1,)
         }
     
+    @property
+    def log_features(self) -> Dict[str, Tuple[int, ...]]:
+        return {
+            "ee_pos" : (3,),
+            "ee_quat": (4,),
+            "target_pos": (3,),
+            "target_quat": (4,),
+        }
+    
     def process_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         # apply EMA smoothing to the input action to ensure smoother control
         self.action = self.ema_factor * arm_action.copy() + (1 - self.ema_factor) * self.action
@@ -97,14 +117,14 @@ class Factory(Task):
             rot_action[2] = -(rot_action[2] + 1.0) * 0.5  # [-1, 0]
         rot_action = rot_action * self.rot_threshold
 
-        ctrl_target_fingertip_midpoint_pos = self.robot.ee_pos + pos_action
+        self.ctrl_target_fingertip_midpoint_pos = self.robot.ee_pos + pos_action
         # To speed up learning, never allow the policy to move more than 5cm away from the base.
         fixed_pos_action_frame = self.fixed_pos_obs_frame
-        delta_pos = ctrl_target_fingertip_midpoint_pos - fixed_pos_action_frame
+        delta_pos = self.ctrl_target_fingertip_midpoint_pos - fixed_pos_action_frame
         pos_error_clipped = np.clip(
             delta_pos, -self.ctrl_cfg.pos_action_bounds[0], self.ctrl_cfg.pos_action_bounds[1]
         )
-        ctrl_target_fingertip_midpoint_pos = fixed_pos_action_frame + pos_error_clipped
+        self.ctrl_target_fingertip_midpoint_pos = fixed_pos_action_frame + pos_error_clipped
 
         # Convert to quat and set rot target
         angle = np.linalg.norm(rot_action)
@@ -116,15 +136,15 @@ class Factory(Task):
             rot_action_quat,
             np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         )
-        ctrl_target_fingertip_midpoint_quat = quat_mul(rot_action_quat, self.robot.ee_quat)
+        self.ctrl_target_fingertip_midpoint_quat = quat_mul(rot_action_quat, self.robot.ee_quat)
 
-        target_euler_xyz = np.stack(get_euler_xyz(ctrl_target_fingertip_midpoint_quat))
+        target_euler_xyz = np.stack(get_euler_xyz(self.ctrl_target_fingertip_midpoint_quat))
         target_euler_xyz[0] = 3.14159  # Restrict actions to be upright.
         target_euler_xyz[1] = 0.0
 
-        ctrl_target_fingertip_midpoint_quat = quat_from_euler_xyz(
+        self.ctrl_target_fingertip_midpoint_quat = quat_from_euler_xyz(
             roll=target_euler_xyz[0], pitch=target_euler_xyz[1], yaw=target_euler_xyz[2]
         )
-        ctrl_target_fingertip_midpoint_pose = np.concatenate([ctrl_target_fingertip_midpoint_pos, ctrl_target_fingertip_midpoint_quat])
+        ctrl_target_fingertip_midpoint_pose = np.concatenate([self.ctrl_target_fingertip_midpoint_pos, self.ctrl_target_fingertip_midpoint_quat])
 
         return ctrl_target_fingertip_midpoint_pose, gripper_action
