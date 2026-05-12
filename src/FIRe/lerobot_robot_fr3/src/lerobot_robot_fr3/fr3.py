@@ -23,6 +23,7 @@ except ImportError:
 
 from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.robots import Robot
+from lerobot.processor import RobotAction, RobotObservation
 from .config_fr3 import FR3RobotConfig
 from .utils import RobotStateManager
 from .utils.math_utils import _wxyz_to_xyzw
@@ -169,7 +170,7 @@ class FR3Robot(Robot):
         finally:
             executor.shutdown()
 
-    def get_observation(self) -> Dict[str, Any]:
+    def get_observation(self) -> RobotObservation:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
         
@@ -177,7 +178,7 @@ class FR3Robot(Robot):
 
         return obs_dict
 
-    def send_action(self, action: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
+    def send_action(self, action: RobotAction) -> RobotAction:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
 
@@ -189,10 +190,37 @@ class FR3Robot(Robot):
         gripper_action = self.task.get_gripper_action(action)
 
         processed_arm_action, processed_gripper_action = self.task.process_action(arm_action, gripper_action)
-        
+
         self.apply_action(processed_arm_action, processed_gripper_action)
 
-        return processed_arm_action, processed_gripper_action
+        processed_action = {
+            "processed_arm_action": processed_arm_action,
+            "processed_gripper_action": processed_gripper_action,
+        }
+
+        return processed_action
+    
+    def send_processed_action(self, action:RobotAction) -> RobotAction:
+        if not self.is_connected:
+            raise ConnectionError(f"{self.name} is not connected.")
+
+        if not self._goal_accepted:
+            self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
+            return action
+        
+        processed_arm_action = self.task.get_arm_action(action)
+        processed_gripper_action = self.task.get_gripper_action(action)
+
+        self.apply_action(processed_arm_action, processed_gripper_action)
+
+        processed_action = {
+            "processed_arm_action": processed_arm_action,
+            "processed_gripper_action": processed_gripper_action,
+        }
+
+        return processed_action
+        
+
 
     def apply_action(
         self, processed_arm_action: np.ndarray, processed_gripper_action: np.ndarray = None
