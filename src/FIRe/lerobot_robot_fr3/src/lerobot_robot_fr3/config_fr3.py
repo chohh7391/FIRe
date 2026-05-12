@@ -6,8 +6,6 @@ from typing import Dict
 from lerobot_ft_sensor.configuration_ft_sensor import FTSensorConfig
 import os
 
-SOURCE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-
 
 @dataclass
 class FR3RobotConfig(RobotConfig):
