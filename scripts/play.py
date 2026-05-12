@@ -430,14 +430,16 @@ def main():
                     "arm_actions": target_pose_np.astype(np.float32),
                     "gripper_actions": np.array([-1.0], dtype=np.float32),
                 }
-                processed_arm_action, _ = robot.send_action(action_dict, is_raw_action=False)
+                # directly controlled by target pose from csv
+                processed_action_dict = robot.send_processed_action(action_dict)
             else:
                 arm_action_np = action_np[:action_dim].copy()
                 action_dict = {
                     "arm_actions": arm_action_np,
                     "gripper_actions": np.array([-1.0], dtype=np.float32),
                 }
-                processed_arm_action, _ = robot.send_action(action_dict)
+                # controlled by action related to observation from csv
+                processed_action_dict = robot.send_action(action_dict)
             t4 = time.perf_counter()
 
             # --- E. 데이터 로깅 (features 기반 자동화) ---

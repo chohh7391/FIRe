@@ -111,7 +111,7 @@ class Factory(Task):
         self.action = self.ema_factor * arm_action.copy() + (1 - self.ema_factor) * self.action
 
         pos_action = self.action[0:3] * self.pos_threshold
-        rot_action = self.action[3:6] * self.rot_threshold
+        rot_action = self.action[3:6]
 
         if self.task_cfg.unidirectional_rot:
             rot_action[2] = -(rot_action[2] + 1.0) * 0.5  # [-1, 0]
