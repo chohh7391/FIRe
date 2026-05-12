@@ -1,6 +1,5 @@
 import numpy as np
-from typing import Dict, Any, Tuple
-from dataclasses import dataclass
+from typing import Dict, Tuple
 from lerobot_robot_fr3.tasks.base_task import Task
 from .factory_cfg import (
     FactoryTaskPegInsertCfg,
@@ -11,7 +10,7 @@ from lerobot_robot_fr3.utils.math_utils import quat_from_angle_axis, quat_mul, g
 
 
 class Factory(Task):
-    def __init__(self, name: str):
+    def __init__(self, name: str) -> None:
         super().__init__(name)
 
         self.create_config()
@@ -20,7 +19,7 @@ class Factory(Task):
         self.fixed_pos = np.array([0.6, 0.0, 0.05])
         self.fixed_quat = np.array([1.0, 0.0, 0.0, 0.0])
 
-    def create_config(self):
+    def create_config(self) -> None:
         if self.name == "peg_insert":
             self.env_cfg = FactoryTaskPegInsertCfg()
         elif self.name == "gear_mesh":
@@ -33,10 +32,10 @@ class Factory(Task):
         self.ctrl_cfg = self.env_cfg.ctrl
         self.task_cfg = self.env_cfg.task
 
-    def create_buffer(self):
-        self.action = np.zeros(self.env_cfg.action_space, dtype=np.float32)
-
         self.ema_factor = self.ctrl_cfg.ema_factor
+
+    def create_buffer(self) -> None:
+        self.action = np.zeros(self.env_cfg.action_space, dtype=np.float32)
         
         self.pos_threshold = np.array(self.ctrl_cfg.pos_action_threshold, dtype=np.float32)
         self.rot_threshold = np.array(self.ctrl_cfg.rot_action_threshold, dtype=np.float32)
@@ -44,7 +43,7 @@ class Factory(Task):
         self.ctrl_target_fingertip_midpoint_pos = np.zeros(3, dtype=np.float32)
         self.ctrl_target_fingertip_midpoint_quat = np.array([1, 0, 0, 0], dtype=np.float32)
     
-    def reset(self):
+    def reset(self) -> None:
         fixed_tip_pos_local = np.zeros(3, dtype=np.float32)
         fixed_tip_pos_local[2] += self.task_cfg.fixed_asset_cfg.height
         fixed_tip_pos_local[2] += self.task_cfg.fixed_asset_cfg.base_height
@@ -53,17 +52,20 @@ class Factory(Task):
 
         fixed_tip_pos = self.fixed_pos + fixed_tip_pos_local
         self.fixed_pos_obs_frame = fixed_tip_pos
+        
+        self.prev_action = np.zeros_like(self.action)
     
     def get_observation(self) -> Dict[str, np.ndarray]:
-        prev_action = self.action.copy()
+        self.prev_action = self.action.copy()
         
         obs_dict = {
             "fingertip_pos_rel_fixed": self.robot.ee_pos - self.fixed_pos_obs_frame,
             "fingertip_quat": self.robot.ee_quat,
             "ee_linvel": self.robot.ee_linvel,
             "ee_angvel": self.robot.ee_angvel,
-            "prev_actions": prev_action,
+            "prev_actions": self.prev_action,
         }
+
         return obs_dict
 
     def get_arm_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
@@ -94,7 +96,6 @@ class Factory(Task):
     def action_features(self) -> Dict[str, Tuple[int, ...]]:
         return {
             "arm_actions": (self.env_cfg.action_space,),
-            "gripper_actions": (1,)
         }
     
     @property

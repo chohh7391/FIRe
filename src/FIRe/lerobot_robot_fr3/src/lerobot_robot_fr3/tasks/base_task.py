@@ -1,31 +1,48 @@
 from typing import Tuple, Dict
 import numpy as np
 from abc import ABC, abstractmethod
-from lerobot_robot_fr3.utils import RobotStateManager
+from lerobot_robot_fr3.utils import RobotStateManager, CameraSensorManager, FTSensorManager
 
 
 class Task(ABC):
-    def __init__(self, name: str):
+    def __init__(self, name: str) -> None:
         self.name = name
         self._robot: RobotStateManager = None
-
+        self._camera_sensor: CameraSensorManager = None
+        self._ft_sensor: FTSensorManager = None
+    
     @property
-    def robot(self):
+    def robot(self) -> RobotStateManager:
         return self._robot
     
-    def allocate_robot(self, robot: RobotStateManager):
+    @property
+    def camera_sensor(self) -> CameraSensorManager:
+        return self._camera_sensor
+    
+    @property
+    def ft_sensor(self) -> FTSensorManager:
+        return self._ft_sensor
+    
+    def allocate_managers(
+        self, 
+        robot: RobotStateManager,
+        camera_sensor: CameraSensorManager = None,
+        ft_sensor: FTSensorManager = None,
+    ) -> None:
         self._robot = robot
+        self._camera_sensor = camera_sensor
+        self._ft_sensor = ft_sensor
     
     @abstractmethod
-    def create_config(self):
+    def create_config(self) -> None:
         raise NotImplementedError
     
     @abstractmethod
-    def create_buffer(self):
+    def create_buffer(self) -> None:
         raise NotImplementedError
     
     @abstractmethod
-    def reset(self):
+    def reset(self) -> None:
         raise NotImplementedError
 
     @abstractmethod

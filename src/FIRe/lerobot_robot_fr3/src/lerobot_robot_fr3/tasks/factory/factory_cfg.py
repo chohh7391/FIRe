@@ -192,7 +192,13 @@ class NutThread(FactoryTask):
 class FactoryEnvCfg:
     action_space = 6
     observation_space = 19
-    obs_order: list = ["fingertip_pos_rel_fixed", "fingertip_quat", "ee_linvel", "ee_angvel", "prev_actions"]
+    obs_order: list = [
+        "fingertip_pos_rel_fixed",
+        "fingertip_quat",
+        "ee_linvel",
+        "ee_angvel",
+        "prev_actions"
+    ]
 
     task_name: str = "peg_insert"  # peg_insert, gear_mesh, nut_thread
     task: FactoryTask = FactoryTask()

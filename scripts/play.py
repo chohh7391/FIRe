@@ -185,6 +185,8 @@ def parse_args():
     parser.add_argument("--visualize",  action="store_true", default=False)
     parser.add_argument("--use_sim_time", action="store_true")
     parser.add_argument("--replay",     type=str, default=None, help="Path to replay CSV file")
+    parser.add_argument("--use_cameras", action="store_true", help="Can use camera sensors to save resources")
+    parser.add_argument("--use_ft_sensor", action="store_true", help="Can use FT sensor")
 
     # Replay 모드 선택 (--replay와 함께 사용; 둘 중 하나만 지정 가능)
     replay_mode = parser.add_mutually_exclusive_group()
@@ -255,10 +257,10 @@ def main():
     #    (task는 __init__에서 생성되므로 connect() 없이도 접근 가능)
     # =================================================================
     config = FR3RobotConfig(
-        use_sim_time=args.use_sim_time, is_relative=False,
-        rotation_type="quaternion",
+        use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion",
+        use_cameras=args.use_cameras, use_ft_sensor=args.use_ft_sensor
     )
-    robot = FR3Robot(config, task=args.task)
+    robot = FR3Robot(config, task_name=args.task)
 
     obs_features   = robot.task.observation_features
     action_features = robot.task.action_features
