@@ -29,6 +29,10 @@ class FR3RobotConfig(RobotConfig):
     is_relative: bool = False
     rotation_type: str = "axis_angle"  # "axis_angle", "euler", "quaternion", "rotation6d"
     arm_action_dim: int = 6
+
+    # turn on / off sensors
+    use_cameras: bool = False
+    use_ft_sensor: bool = False
     
     ft_sensor: FTSensorConfig = FTSensorConfig(
         config_path="/home/home/FIRe/src/FIRe/lerobot_ft_sensor/src/lerobot_ft_sensor/config/bota_binary.json"

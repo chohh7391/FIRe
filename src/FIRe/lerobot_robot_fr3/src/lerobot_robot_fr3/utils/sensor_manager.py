@@ -124,7 +124,7 @@ class FTSensorManager:
         self._data = {"force": np.zeros(3), "torque": np.zeros(3)}
         self._data_lock = threading.Lock()
 
-        self._scale = np.array([-1.0, -1.0, -1.0, 1.0, 1.0, 1.0])
+        self._scale = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
         
         self._is_connected = False
         self.is_initialized = False

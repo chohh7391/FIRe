@@ -25,32 +25,23 @@ from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.robots import Robot
 from lerobot.processor import RobotAction, RobotObservation
 from .config_fr3 import FR3RobotConfig
-from .utils import RobotStateManager
+from .utils import RobotStateManager, CameraSensorManager, FTSensorManager
+from lerobot_ft_sensor.ft_sensor import FTSensor
 from .utils.math_utils import _wxyz_to_xyzw
 from .tasks import Task
+from . import create_task
 
 
 class FR3Robot(Robot):
     config_class = FR3RobotConfig
-    name = "fr3_vla"
+    name = "fr3_robot"
 
-    def __init__(self, config: FR3RobotConfig, task: str):
+    def __init__(
+        self, config: FR3RobotConfig, task_name: str,
+    ):
         super().__init__(config)
-        self.config = config
-        if task == "factory-peg_insert":
-            from .tasks.factory.factory import Factory
-            self.task = Factory(name="peg_insert")
-        elif task == "factory-gear_mesh":
-            from .tasks.factory.factory import Factory
-            self.task = Factory(name="gear_mesh")
-        elif task == "factory-nut_thread":
-            from .tasks.factory.factory import Factory
-            self.task = Factory(name="nut_thread")
-        elif task == "reach":
-            from .tasks.reach.reach import Reach
-            self.task = Reach(name="reach")
-        else:
-            raise ValueError(f"Unknown task name: {task}")
+        self.config: FR3RobotConfig = config
+        self.task: Task = create_task(task_name)
 
         self.node = None
         self.executor_thread = None
@@ -63,6 +54,8 @@ class FR3Robot(Robot):
         
         # update robot state & can get robot state from this
         self.robot_state_manager = None
+        self.camera_sensor_manager = None
+        self.ft_sensor_manager = None
 
     @property
     def is_connected(self) -> bool:
@@ -91,8 +84,23 @@ class FR3Robot(Robot):
 
         self.action_cb_group = ReentrantCallbackGroup()
 
+        # create robot state & sensor managers
         self.robot_state_manager = RobotStateManager(self.node)
-        self.task.allocate_robot(self.robot_state_manager)
+        if self.config.use_cameras:
+            self.camera_sensor_manager = CameraSensorManager(
+                node=self.node, config=self.config.cameras, fps=30.0
+            )
+        if self.config.use_ft_sensor:
+            self.ft_sensor_manager = FTSensorManager(
+                node=self.node, config=self.config.ft_sensor
+            )
+
+        # allocate managers to task
+        self.task.allocate_managers(
+            robot=self.robot_state_manager,
+            ft_sensor=self.ft_sensor_manager,
+            camera_sensor=self.camera_sensor_manager,
+        )
 
         self.pub_action_chunk = self.node.create_publisher(
             ActionChunk, self.config.action_topic, 10
@@ -126,6 +134,12 @@ class FR3Robot(Robot):
             time.sleep(0.1)
         else:
             print("Warning: Did not receive EE pose (TF transform) within timeout.")
+
+        # connect to sensors
+        if self.camera_sensor_manager is not None:
+            self.camera_sensor_manager.connect()
+        if self.ft_sensor_manager is not None:
+            self.ft_sensor_manager.connect()
 
         self.task.reset()
 
@@ -232,6 +246,12 @@ class FR3Robot(Robot):
     def disconnect(self) -> None:
         if not self.is_connected:
             return
+        
+        # disconnect to sensors
+        if self.camera_sensor_manager is not None:
+            self.camera_sensor_manager.disconnect()
+        if self.ft_sensor_manager is not None:
+            self.ft_sensor_manager.disconnect()
 
         print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
         trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')

@@ -1,3 +1,4 @@
+from typing import Tuple
 import numpy as np
 from scipy.spatial.transform import Rotation
 
@@ -49,3 +50,18 @@ def quat_from_euler_xyz(roll: float, pitch: float, yaw: float) -> np.ndarray:
     """
     r = Rotation.from_euler("xyz", [roll, pitch, yaw])
     return _xyzw_to_wxyz(r.as_quat()).astype(np.float32)
+
+def quat_conjugate(a: np.ndarray) -> np.ndarray:
+    return np.concatenate([a[0:1], -a[1:]])
+
+def quat_apply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    xyz = a[1:]
+    t = np.linalg.cross(xyz, b) * 2
+    return b + a[0:1] * t + np.linalg.cross(xyz, t)
+
+def tf_inverse(q: np.ndarray, t: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    q_inv = quat_conjugate(q)
+    return q_inv, -quat_apply(q_inv, t)
+
+def tf_combine(q1, t1, q2, t2) -> Tuple[np.ndarray, np.ndarray]:
+    return quat_mul(q1, q2) , quat_apply(q1, t2) + t1
