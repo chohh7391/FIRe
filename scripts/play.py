@@ -177,15 +177,6 @@ def run_inference_process(
 
     model_device = next(agent.model.parameters()).device
 
-    # ── Warm-up ──────────────────────────────────────────────────────────────
-    print(f"[INFER] Warming up ({warmup_steps} steps) on {model_device} ...")
-    dummy_obs = agent.obs_to_torch(torch.ones(1, obs_dim, device=device)).to(model_device)
-    with torch.inference_mode():
-        for _ in range(warmup_steps):
-            agent.get_action(dummy_obs, is_deterministic=True)
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-
     print("[INFER] Ready.")
     action_flag.value = 2  # signal: warm-up done
 
@@ -507,7 +498,6 @@ def run_control_loop(
             # strategy.step()이 반환한 action_dict를 실제로 로봇에 전송
             # (pose 모드만 send_processed_action, 나머지는 send_action)
             if isinstance(strategy, ReplayPoseStrategy):
-                print(f"result.action_dict: {result.action_dict}")
                 if result.action_dict:
                     robot.send_processed_action(result.action_dict)
             else:
