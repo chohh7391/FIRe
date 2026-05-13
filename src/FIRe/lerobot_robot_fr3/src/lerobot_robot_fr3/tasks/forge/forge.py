@@ -6,9 +6,8 @@ from .forge_cfg import (
     ForgeTaskGearMeshCfg,
     ForgeTaskNutThreadCfg,
 )
-from lerobot_robot_fr3.utils.math_utils import (
-    tf_inverse, tf_combine, quat_apply, quat_from_euler_xyz, quat_mul, get_euler_xyz
-)
+from lerobot_robot_fr3.utils.transformation_utils import tf_inverse, tf_combine
+from lerobot_robot_fr3.utils.rotation_utils import quat_apply, quat_from_euler_xyz, quat_mul, get_euler_xyz
 
 
 class Forge(Factory):
@@ -33,7 +32,7 @@ class Forge(Factory):
     def create_buffer(self) -> None:
         super().create_buffer()
 
-        self.force_sensor_world_smooth = np.zeros(3, dtype=np.float32)
+        self.force_sensor_world_smooth = np.zeros(6, dtype=np.float32)
 
     def reset(self) -> None:
         super().reset()
@@ -63,6 +62,10 @@ class Forge(Factory):
         yaw_action = (fingertip_yaw_bolt + np.deg2rad(180.0)) / np.deg2rad(270.0) * 2.0 - 1.0
         self.action[5] = self.prev_action[5] = yaw_action
         self.action[6] = self.prev_action[6] = -1.0
+
+        ema_rand = np.random.rand()
+        ema_lower, ema_upper = self.ctrl_cfg.ema_factor_range
+        self.ema_factor = ema_lower + ema_rand * (ema_upper - ema_lower)
 
         contact_rand = np.random.rand()
         contact_lower, contact_upper = self.task_cfg.contact_penalty_threshold_range
@@ -121,7 +124,7 @@ class Forge(Factory):
 
     @property
     def log_features(self) -> Dict[str, Tuple[int, ...]]:
-        pass
+        return super().log_features
 
     def process_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
         # apply EMA smoothing to the input action to ensure smoother control
@@ -148,7 +151,7 @@ class Forge(Factory):
 
         self.delta_pos = ctrl_target_fingertip_preclipped_pos  - self.robot.ee_pos
         pos_error_clipped = np.clip(self.delta_pos, -self.pos_threshold, self.pos_threshold)
-        self.ctrl_target_fingertip_midpoint_pos = self.ctrl_target_fingertip_midpoint_pos + pos_error_clipped
+        self.ctrl_target_fingertip_midpoint_pos = self.robot.ee_pos + pos_error_clipped
 
         curr_roll, curr_pitch, curr_yaw = get_euler_xyz(self.robot.ee_quat)
         desired_roll, desired_pitch, desired_yaw = get_euler_xyz(ctrl_target_fingertip_preclipped_quat)
@@ -159,7 +162,7 @@ class Forge(Factory):
 
         self.delta_yaw = desired_yaw - curr_yaw
         clipped_yaw = np.clip(self.delta_yaw, -self.rot_threshold[2], self.rot_threshold[2])
-        desired_yaw[2] = curr_yaw + clipped_yaw
+        desired_xyz[2] = curr_yaw + clipped_yaw
 
         desired_roll = np.where(desired_roll < 0.0, desired_roll + 2 * np.pi, desired_roll)
         desired_pitch = np.where(desired_pitch < 0.0, desired_pitch + 2 * np.pi, desired_pitch)
@@ -184,8 +187,13 @@ class Forge(Factory):
         return ctrl_target_fingertip_midpoint_pose, gripper_action
 
     def compute_ft_force(self) -> np.ndarray:
-        # self.force_sensor_world = self.ft_sensor.force
-        self.force_sensor_world = np.zeros(3, dtype=np.float32)
+        if self.ft_sensor is not None:
+            self.force_sensor_world = np.concatenate([
+                self.ft_sensor.force, self.ft_sensor.torque
+            ])
+        else:
+            self.force_sensor_world = np.zeros(6, dtype=np.float32)
+
         self.force_sensor_world_smooth = self.alpha * self.force_sensor_world + (1 - self.alpha) * self.force_sensor_world_smooth
 
         identity_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
@@ -203,7 +211,7 @@ class Forge(Factory):
 
     def change_FT_frame(
         self, source_F: np.ndarray, source_T: np.ndarray,
-        source_frame: np.ndarray, target_frame: np.ndarray
+        source_frame: Tuple[np.ndarray, np.ndarray], target_frame: Tuple[np.ndarray, np.ndarray]
     ) -> Tuple[np.ndarray, np.ndarray]:
         # Modern Robotics eq. 3.95
         source_frame_inv = tf_inverse(source_frame[0], source_frame[1])

@@ -6,8 +6,7 @@ from .factory_cfg import (
     FactoryTaskGearMeshCfg,
     FactoryTaskNutThreadCfg,
 )
-from lerobot_robot_fr3.utils.math_utils import quat_from_angle_axis, quat_mul, get_euler_xyz, quat_from_euler_xyz
-
+from lerobot_robot_fr3.utils.rotation_utils import quat_from_angle_axis, quat_mul, get_euler_xyz, quat_from_euler_xyz
 
 class Factory(Task):
     def __init__(self, name: str) -> None:

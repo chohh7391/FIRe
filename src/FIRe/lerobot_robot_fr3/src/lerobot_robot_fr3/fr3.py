@@ -27,7 +27,7 @@ from lerobot.processor import RobotAction, RobotObservation
 from .config_fr3 import FR3RobotConfig
 from .utils import RobotStateManager, CameraSensorManager, FTSensorManager
 from lerobot_ft_sensor.ft_sensor import FTSensor
-from .utils.math_utils import _wxyz_to_xyzw
+from .utils.rotation_utils import wxyz2xyzw
 from .tasks import Task
 from . import create_task
 
@@ -316,7 +316,7 @@ class FR3Robot(Robot):
 
     def wrap_action_to_msg(self, arm_action: np.ndarray, gripper_action: np.ndarray = None) -> ActionChunk:
 
-        arm_action[3:7] = _wxyz_to_xyzw(arm_action[3:7])
+        arm_action[3:7] = wxyz2xyzw(arm_action[3:7])
         gripper_action = gripper_action if gripper_action is not None else np.array([])
         
         msg = ActionChunk()

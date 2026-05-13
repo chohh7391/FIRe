@@ -64,5 +64,5 @@ class ForgeTaskGearMeshCfg(ForgeEnvCfg):
 
 
 class ForgeTaskNutThreadCfg(ForgeEnvCfg):
-    task_name = "peg_insert"
+    task_name = "nut_thread"
     task = ForgeNutThread()

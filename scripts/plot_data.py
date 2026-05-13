@@ -26,7 +26,7 @@ def load_task_features(task_name: str) -> Tuple[Dict, Dict]:
         sys.exit(1)
     
     config = FR3RobotConfig()
-    robot = FR3Robot(config, task=task_name)
+    robot = FR3Robot(config, task_name=task_name)
     task = robot.task
     return task.observation_features, task.log_features
 
