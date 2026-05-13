@@ -1,140 +1,174 @@
+"""vla_runner.py
+
+Franka FR3 VLA inference runner.
+
+Step ordering — mirrors Isaac Lab DirectRLEnv
+---------------------------------------------
+Isaac Lab:
+  reset()  →  obs_0  (zero action initialized)
+  loop:
+    pre_physics_step(action_t)   # buffer action
+    apply_action()               # send buffered action → robot/sim
+    sim.step()                   # physics
+    obs_t+1 = get_observations() # collect next obs
+
+This runner:
+  connect()  →  obs_0  (zero action initialized)
+  loop:
+    send_action(action_t)        # apply buffered action first  ← pre_physics + apply_action
+    obs_t+1 = get_observation()  # collect obs after physics    ← get_observations
+    action_t+1 = infer(obs_t+1)  # compute next action (async)  ← policy
+
+  action_0 is always zeros (safe neutral action for the first step).
+
+Architecture
+------------
+Main Process (A)  ←→  Inference Process (B)
+  - ROS2 / robot I/O         - rl-games agent (GPU)
+  - control loop @ N Hz      - spin-wait on obs_flag
+  - CSV logging              - writes action to shared mem
+
+Communication: shared torch tensors + RawValue spin-flags
+  obs_flag  : 0=idle  1=obs_ready
+  action_flag: 0=idle  1=action_ready  2=warmup_done
+"""
+
+from __future__ import annotations
+
 import argparse
 import ctypes
-import time
-import torch
-import torch.multiprocessing as mp
-from multiprocessing import RawValue
-from typing import Dict, Tuple, List
-import numpy as np
-import cv2
-import pandas as pd
 import datetime
 import os
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from multiprocessing import RawValue
+from typing import Dict, List, Optional, Tuple
+
+import cv2
+import numpy as np
+import pandas as pd
+import torch
+import torch.multiprocessing as mp
 
 
-# =================================================================
-# Feature helpers
-# observation_features / log_features 같은 Dict[str, Tuple[int, ...]]
-# 정의를 받아서 평탄화/컬럼명 생성/shared memory write를 일반화한다.
-# =================================================================
-def features_total_dim(features: Dict[str, Tuple[int, ...]]) -> int:
-    """features의 모든 항목 dim 합."""
-    return sum(int(np.prod(shape)) for shape in features.values())
+# ──────────────────────────────────────────────────────────────────────────────
+# Feature utilities
+# ──────────────────────────────────────────────────────────────────────────────
+
+Features = Dict[str, Tuple[int, ...]]
 
 
-def features_to_flat_keys(features: Dict[str, Tuple[int, ...]]) -> List[str]:
-    """features 정의로부터 평탄화된 컬럼 이름 리스트를 만든다.
-    예) {"ee_pos": (3,)} → ["ee_pos_0", "ee_pos_1", "ee_pos_2"]
-    """
+def total_dim(features: Features) -> int:
+    return sum(int(np.prod(s)) for s in features.values())
+
+
+def flat_keys(features: Features) -> List[str]:
     keys: List[str] = []
     for name, shape in features.items():
-        dim = int(np.prod(shape))
-        for i in range(dim):
+        for i in range(int(np.prod(shape))):
             keys.append(f"{name}_{i}")
     return keys
 
 
-def flatten_features(
-    data_dict: Dict[str, np.ndarray],
-    features: Dict[str, Tuple[int, ...]],
-) -> Dict[str, float]:
-    """features 정의에 맞춰 data_dict를 평탄화한 dict로 변환."""
-    flat: Dict[str, float] = {}
+def flatten(data: Dict[str, np.ndarray], features: Features) -> Dict[str, float]:
+    out: Dict[str, float] = {}
     for key, shape in features.items():
-        arr = np.asarray(data_dict[key], dtype=np.float32).ravel()
+        arr = np.asarray(data[key], dtype=np.float32).ravel()
         dim = int(np.prod(shape))
-        if arr.size < dim:
-            raise ValueError(
-                f"'{key}' has {arr.size} elements, expected {dim}"
-            )
         for i in range(dim):
-            flat[f"{key}_{i}"] = float(arr[i])
-    return flat
+            out[f"{key}_{i}"] = float(arr[i])
+    return out
 
 
-def flatten_obs_to_indexed(
-    obs_dict: Dict[str, np.ndarray],
-    obs_features: Dict[str, Tuple[int, ...]],
-) -> Dict[str, float]:
-    """obs_features 순서대로 obs_dict를 이어 붙여 obs_0~N 형태로 반환.
-    --raw replay에서 읽는 컬럼명과 일치하도록 obs_? 인덱스로 저장한다."""
-    flat: Dict[str, float] = {}
+def obs_to_indexed(obs: Dict[str, np.ndarray], features: Features) -> Dict[str, float]:
+    """obs_features 순서대로 obs_0 ~ obs_N 형태로 직렬화."""
+    out: Dict[str, float] = {}
     idx = 0
-    for key, shape in obs_features.items():
-        arr = np.asarray(obs_dict[key], dtype=np.float32).ravel()
-        dim = int(np.prod(shape))
-        for i in range(dim):
-            flat[f"obs_{idx}"] = float(arr[i])
+    for key, shape in features.items():
+        arr = np.asarray(obs[key], dtype=np.float32).ravel()
+        for v in arr[: int(np.prod(shape))]:
+            out[f"obs_{idx}"] = float(v)
             idx += 1
-    return flat
+    return out
 
 
-def write_obs_to_shm(
-    obs_dict: dict,
-    obs_buf: np.ndarray,
-    obs_features: Dict[str, Tuple[int, ...]],
-) -> None:
-    """obs_features 정의 순서대로 obs_dict 값을 shared memory에 직접 쓴다.
-    torch 변환 없이 순수 numpy slice write → GIL 최소화."""
+def write_obs_shm(obs: dict, buf: np.ndarray, features: Features) -> None:
+    """shared memory에 obs를 직접 slice-write (GIL 최소화)."""
     offset = 0
-    for key, shape in obs_features.items():
+    for key, shape in features.items():
         dim = int(np.prod(shape))
-        val = np.asarray(obs_dict[key], dtype=np.float32).ravel()
-        obs_buf[offset:offset + dim] = val[:dim]
+        buf[offset : offset + dim] = np.asarray(obs[key], dtype=np.float32).ravel()[:dim]
         offset += dim
 
 
-# =================================================================
-# Inference 프로세스 (프로세스 B)
-# ROS 스레드 없음 → GIL 경합 없음
-# spin-wait 플래그로 OS 스케줄링 레이턴시 제거
-# =================================================================
+# ──────────────────────────────────────────────────────────────────────────────
+# Inference process (Process B)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _build_dummy_env(obs_dim: int, action_dim: int, device: torch.device):
+    """rl-games가 요구하는 최소 env 인터페이스."""
+
+    class _DummyEnv:
+        observation_space = type("S", (), {"shape": (obs_dim,)})()
+        action_space = type("S", (), {
+            "shape": (action_dim,),
+            "high":  np.ones(action_dim, dtype=np.float32),
+            "low":  -np.ones(action_dim, dtype=np.float32),
+        })()
+        num_envs = 1
+
+        def reset(self):
+            return torch.zeros(1, obs_dim, device=device)
+
+        def step(self, _):
+            return torch.zeros(1, obs_dim, device=device), torch.zeros(1), \
+                   torch.zeros(1, dtype=torch.bool), {}
+
+    return _DummyEnv()
+
+
 def run_inference_process(
     obs_shm: torch.Tensor,
     action_shm: torch.Tensor,
-    obs_flag: RawValue,       # 0=idle, 1=obs ready
-    action_flag: RawValue,    # 0=idle, 1=action ready, 2=warm-up done
+    obs_flag: RawValue,
+    action_flag: RawValue,
     stop_event: mp.Event,
+    *,
     checkpoint: str,
     cfg_path: str,
     obs_dim: int,
     action_dim: int,
     device_str: str,
-):
+    warmup_steps: int = 50,
+) -> None:
+    """Inference-only subprocess: ROS 없음, GIL 경합 없음."""
     import yaml
-    import numpy as np
-    import torch
     from rl_games.common import env_configurations, vecenv
     from rl_games.torch_runner import Runner
 
     device = torch.device(device_str if torch.cuda.is_available() else "cpu")
 
-    with open(cfg_path, "r") as f:
-        agent_cfg = yaml.safe_load(f)
+    with open(cfg_path) as f:
+        cfg = yaml.safe_load(f)
+    cfg["params"].update({
+        "load_checkpoint": True,
+        "load_path": checkpoint,
+    })
+    cfg["params"]["config"].update({
+        "device": str(device),
+        "num_actors": 1,
+    })
 
-    agent_cfg["params"]["load_checkpoint"] = True
-    agent_cfg["params"]["load_path"] = checkpoint
-    agent_cfg["params"]["config"]["device"] = str(device)
-    agent_cfg["params"]["config"]["num_actors"] = 1
-
-    class DummyEnv:
-        def __init__(self):
-            self.observation_space = type("S", (), {"shape": (obs_dim,)})()
-            self.action_space = type("S", (), {
-                "shape": (action_dim,),
-                "high": np.ones(action_dim, dtype=np.float32),
-                "low": -np.ones(action_dim, dtype=np.float32),
-            })()
-            self.num_envs = 1
-        def reset(self): return torch.zeros(1, obs_dim, device=device)
-        def step(self, _): return torch.zeros(1, obs_dim, device=device), torch.zeros(1), torch.zeros(1, dtype=torch.bool), {}
-
-    dummy_env = DummyEnv()
-    vecenv.register("IsaacRlgWrapper", lambda _config_name, _num_actors, **_kw: dummy_env)
-    env_configurations.register("rlgpu", {"vecenv_type": "IsaacRlgWrapper", "env_creator": lambda **_kw: dummy_env})
+    dummy_env = _build_dummy_env(obs_dim, action_dim, device)
+    vecenv.register("IsaacRlgWrapper", lambda *_, **__: dummy_env)
+    env_configurations.register("rlgpu", {
+        "vecenv_type": "IsaacRlgWrapper",
+        "env_creator": lambda **__: dummy_env,
+    })
 
     runner = Runner()
-    runner.load(agent_cfg)
+    runner.load(cfg)
     agent = runner.create_player()
     agent.restore(checkpoint)
     agent.reset()
@@ -143,323 +177,346 @@ def run_inference_process(
 
     model_device = next(agent.model.parameters()).device
 
-    # Warm-up
-    print("[INFER PROC] Warming up...")
-    dummy = torch.ones(1, obs_dim, device=device)
-    obs_t = agent.obs_to_torch(dummy).to(model_device)
+    # ── Warm-up ──────────────────────────────────────────────────────────────
+    print(f"[INFER] Warming up ({warmup_steps} steps) on {model_device} ...")
+    dummy_obs = agent.obs_to_torch(torch.ones(1, obs_dim, device=device)).to(model_device)
     with torch.inference_mode():
-        for _ in range(50):
-            agent.get_action(obs_t, is_deterministic=True)
+        for _ in range(warmup_steps):
+            agent.get_action(dummy_obs, is_deterministic=True)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
 
-    print(f"[INFER PROC] Ready. model_device={model_device}")
-    action_flag.value = 2  # warm-up 완료 신호
+    print("[INFER] Ready.")
+    action_flag.value = 2  # signal: warm-up done
 
-    # Inference 루프 (spin-wait)
+    # ── Inference loop (spin-wait) ────────────────────────────────────────────
     while not stop_event.is_set():
-        # obs가 준비될 때까지 spin
-        if obs_flag.value == 0:
+        if obs_flag.value != 1:
             continue
         obs_flag.value = 0
 
         with torch.inference_mode():
             obs_t = agent.obs_to_torch(obs_shm.to(device)).to(model_device)
-            rl_action = agent.get_action(obs_t, is_deterministic=True)
+            act   = agent.get_action(obs_t, is_deterministic=True)
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
-        action_shm.copy_(rl_action.cpu())
-        action_flag.value = 1  # action 준비 완료
+        action_shm.copy_(act.cpu())
+        action_flag.value = 1
 
-    print("[INFER PROC] Stopped.")
-
-
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--task", type=str, default="peg_insert")
-    parser.add_argument("--checkpoint", type=str, required=True)
-    parser.add_argument("--cfg",        type=str, required=True)
-    parser.add_argument("--device",     type=str, default="cuda:0")
-    parser.add_argument("--control_hz", type=float, default=15.0)
-    parser.add_argument("--visualize",  action="store_true", default=False)
-    parser.add_argument("--use_sim_time", action="store_true")
-    parser.add_argument("--replay",     type=str, default=None, help="Path to replay CSV file")
-    parser.add_argument("--use_cameras", action="store_true", help="Can use camera sensors to save resources")
-    parser.add_argument("--use_ft_sensor", action="store_true", help="Can use FT sensor")
-
-    # Replay 모드 선택 (--replay와 함께 사용; 둘 중 하나만 지정 가능)
-    replay_mode = parser.add_mutually_exclusive_group()
-    replay_mode.add_argument(
-        "--raw",
-        action="store_true",
-        help="Replay 모드: CSV의 obs를 사용해 model inference → send_action(raw=True)",
-    )
-    replay_mode.add_argument(
-        "--pose",
-        action="store_true",
-        help="Replay 모드: CSV의 target_pos/quat을 직접 사용 → send_action(raw=False)",
-    )
-
-    parser.add_argument("--save_path", type=str, help="Path to save collected data")
-    args = parser.parse_args()
-
-    # --raw / --pose 는 --replay와 함께만 의미가 있음.
-    if (args.raw or args.pose) and not args.replay:
-        parser.error("--raw / --pose 는 --replay 와 함께 사용해야 합니다.")
-    if args.replay and not (args.raw or args.pose):
-        parser.error("--replay 사용 시 --raw 또는 --pose 중 하나를 반드시 지정해야 합니다.")
-
-    return args
+    print("[INFER] Stopped.")
 
 
-def load_replay_obs(replay_data: pd.DataFrame, step_idx: int, obs_dim: int) -> np.ndarray:
-    """CSV에서 obs_0 ~ obs_{obs_dim-1} 컬럼을 읽어 numpy array로 반환."""
-    row = replay_data.iloc[step_idx]
-    obs_cols = [f"obs_{i}" for i in range(obs_dim)]
+# ──────────────────────────────────────────────────────────────────────────────
+# Control strategies (Strategy pattern)
+# ──────────────────────────────────────────────────────────────────────────────
 
-    missing = [c for c in obs_cols if c not in replay_data.columns]
-    if missing:
-        raise KeyError(f"[REPLAY] CSV에 다음 컬럼이 없습니다: {missing}")
-
-    return row[obs_cols].to_numpy(dtype=np.float32)
+@dataclass
+class StepResult:
+    obs_dict: Optional[dict]   # 실제 로봇 obs (로깅용; None이면 logger가 직접 수집)
+    action_dict: dict          # 이번 스텝에 send한 action (로깅용)
 
 
-def load_replay_target_pose(
-    replay_data: pd.DataFrame,
-    step_idx: int,
-    pose_cols: List[str],
-) -> np.ndarray:
-    """CSV에서 target_pos_* + target_quat_* 컬럼(총 7개)을 numpy array로 반환.
+class ControlStrategy(ABC):
+    """Isaac Lab DirectRLEnv와 동일한 action-first 스텝 순서를 구현하는 전략.
 
-    반환 shape: (7,) → [pos_0, pos_1, pos_2, quat_0, quat_1, quat_2, quat_3]
-    quat 순서는 task의 log_features 정의(quat = [w, x, y, z])를 따른다.
+    각 step() 호출은 다음 순서로 동작:
+      1. send_action(buffered_action_t)   ← apply_action()에 대응
+      2. get_observation()  →  obs_t+1   ← get_observations()에 대응
+      3. infer(obs_t+1)  →  buffer action_t+1   ← policy (비동기)
+
+    첫 스텝(step_idx=0)의 buffered action은 zeros.
     """
-    row = replay_data.iloc[step_idx]
-    missing = [c for c in pose_cols if c not in replay_data.columns]
-    if missing:
-        raise KeyError(f"[REPLAY] CSV에 다음 컬럼이 없습니다: {missing}")
 
-    return row[pose_cols].to_numpy(dtype=np.float32)
+    @abstractmethod
+    def reset(self) -> dict:
+        """로봇 초기 obs를 수집하고 내부 action 버퍼를 zeros로 초기화."""
+        ...
+
+    @abstractmethod
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        """None 반환 시 루프 종료."""
+        ...
 
 
-def main():
-    from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
-    from lerobot_robot_fr3.fr3 import FR3Robot
+def _zero_action(action_dim: int) -> dict:
+    return {
+        "arm_actions":     np.zeros(action_dim, dtype=np.float32),
+        "gripper_actions": np.array([-1.0], dtype=np.float32),
+    }
 
-    args = parse_args()
 
-    # --pose 모드는 inference 프로세스가 필요 없다.
-    needs_inference = not (args.replay and args.pose)
+class LiveInferenceStrategy(ControlStrategy):
+    """실시간: action apply → obs 수집 → inference (Isaac Lab 순서)."""
 
-    # =================================================================
-    # 1. Robot 객체 생성 → connect() 전에 task features로 dim 계산
-    #    (task는 __init__에서 생성되므로 connect() 없이도 접근 가능)
-    # =================================================================
-    config = FR3RobotConfig(
-        use_sim_time=args.use_sim_time, is_relative=False, rotation_type="quaternion",
-        use_cameras=args.use_cameras, use_ft_sensor=args.use_ft_sensor
-    )
-    robot = FR3Robot(config, task_name=args.task)
+    def __init__(self, robot, obs_buf: np.ndarray, obs_features: Features,
+                 obs_flag: RawValue, action_flag: RawValue,
+                 action_shm: torch.Tensor, action_dim: int):
+        self._robot = robot
+        self._obs_buf = obs_buf
+        self._obs_features = obs_features
+        self._obs_flag = obs_flag
+        self._action_flag = action_flag
+        self._action_shm = action_shm
+        self._action_dim = action_dim
+        self._buffered_action: dict = _zero_action(action_dim)
 
-    obs_features   = robot.task.observation_features
-    action_features = robot.task.action_features
-    log_features   = robot.task.log_features
+    def _wait_inference(self) -> np.ndarray:
+        while self._action_flag.value == 0:
+            pass
+        self._action_flag.value = 0
+        return self._action_shm.numpy().flatten()[: self._action_dim].copy()
 
-    obs_dim    = features_total_dim(obs_features)
-    # action_features는 arm_actions + gripper_actions를 포함하므로 arm만 사용
-    action_dim = features_total_dim({"arm_actions": action_features["arm_actions"]})
+    def _trigger_inference(self, obs_dict: dict) -> None:
+        write_obs_shm(obs_dict, self._obs_buf, self._obs_features)
+        self._obs_flag.value = 1
 
-    print(f"[INFO] obs_dim={obs_dim}, action_dim={action_dim} (from task.features)")
+    def reset(self) -> dict:
+        self._buffered_action = _zero_action(self._action_dim)
+        obs_dict = self._robot.get_observation()
+        # 첫 obs로 첫 inference를 미리 트리거 → step(0)에서 바로 action 사용
+        self._trigger_inference(obs_dict)
+        return obs_dict
 
-    # =================================================================
-    # 2. Shared memory + spin-wait 플래그 + Inference 프로세스 시작
-    # =================================================================
-    obs_shm    = torch.zeros(1, obs_dim).share_memory_()
-    action_shm = torch.zeros(1, action_dim).share_memory_()
-    obs_flag    = RawValue(ctypes.c_int32, 0)
-    action_flag = RawValue(ctypes.c_int32, 0)
-    stop_event  = mp.Event()
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        # 1. inference 결과를 회수해 action 버퍼 갱신
+        arm_action = self._wait_inference()
+        self._buffered_action = {
+            "arm_actions":     arm_action,
+            "gripper_actions": np.array([-1.0], dtype=np.float32),
+        }
 
-    infer_proc = None
-    if needs_inference:
-        infer_proc = mp.Process(
-            target=run_inference_process,
-            args=(obs_shm, action_shm, obs_flag, action_flag, stop_event,
-                  args.checkpoint, args.cfg, obs_dim, action_dim, args.device),
-            daemon=True,
-        )
-        infer_proc.start()
+        # 2. 버퍼된 action을 로봇에 적용 (apply_action에 대응)
+        #    → run_control_loop에서 send_action 호출
 
-        print("[INFO] Waiting for inference process to warm up...")
+        # 3. obs 수집 후 다음 inference 트리거 (get_observations에 대응)
+        obs_dict = self._robot.get_observation()
+        self._trigger_inference(obs_dict)
+
+        return StepResult(obs_dict=obs_dict, action_dict=self._buffered_action)
+
+
+class ReplayRawStrategy(ControlStrategy):
+    """Replay --raw: CSV obs → inference → action (Isaac Lab 순서)."""
+
+    def __init__(self, replay_data: pd.DataFrame, obs_buf: np.ndarray,
+                 obs_flag: RawValue, action_flag: RawValue,
+                 action_shm: torch.Tensor, obs_dim: int, action_dim: int):
+        self._data = replay_data
+        self._obs_buf = obs_buf
+        self._obs_flag = obs_flag
+        self._action_flag = action_flag
+        self._action_shm = action_shm
+        self._obs_dim = obs_dim
+        self._action_dim = action_dim
+        self._buffered_action: dict = _zero_action(action_dim)
+
+    def _load_obs_row(self, step_idx: int) -> np.ndarray:
+        row = self._data.iloc[step_idx]
+        return row[[f"obs_{i}" for i in range(self._obs_dim)]].to_numpy(dtype=np.float32)
+
+    def _trigger_inference(self, obs_np: np.ndarray) -> None:
+        self._obs_buf[:] = obs_np
+        self._obs_flag.value = 1
+
+    def _wait_inference(self) -> np.ndarray:
+        while self._action_flag.value == 0:
+            pass
+        self._action_flag.value = 0
+        return self._action_shm.numpy().flatten()[: self._action_dim].copy()
+
+    def reset(self) -> dict:
+        self._buffered_action = _zero_action(self._action_dim)
+        # 첫 obs로 첫 inference를 미리 트리거
+        self._trigger_inference(self._load_obs_row(0))
+        return {}
+
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        if step_idx >= len(self._data):
+            print("\n[INFO] Replay CSV finished.")
+            return None
+
+        # 1. 이전에 트리거된 inference 결과를 회수
+        arm_action = self._wait_inference()
+        self._buffered_action = {
+            "arm_actions":     arm_action,
+            "gripper_actions": np.array([-1.0], dtype=np.float32),
+        }
+
+        # 2. 버퍼된 action 전송은 run_control_loop에서 담당
+
+        # 3. 다음 스텝 obs로 다음 inference를 미리 트리거
+        next_idx = step_idx + 1
+        if next_idx < len(self._data):
+            self._trigger_inference(self._load_obs_row(next_idx))
+
+        print(f"\r[REPLAY-RAW] {step_idx + 1}/{len(self._data)}", end="")
+        return StepResult(obs_dict=None, action_dict=self._buffered_action)
+
+
+class ReplayPoseStrategy(ControlStrategy):
+    """Replay --pose: CSV target pose를 직접 action으로 전송 (inference 없음)."""
+
+    def __init__(self, replay_data: pd.DataFrame, pose_cols: List[str], action_dim: int):
+        self._data = replay_data
+        self._pose_cols = pose_cols
+        self._action_dim = action_dim
+        self._buffered_action: dict = _zero_action(action_dim)
+
+    def reset(self) -> dict:
+        self._buffered_action = _zero_action(self._action_dim)
+        return {}
+
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        if step_idx >= len(self._data):
+            print("\n[INFO] Replay CSV finished.")
+            return None
+
+        # 1. 버퍼된 action 전송
+        sent_action = self._buffered_action.copy()
+
+        # 2. 다음 스텝 target pose를 버퍼에 준비
+        next_idx = step_idx + 1
+        if next_idx < len(self._data):
+            row = self._data.iloc[next_idx]
+            target_pose = row[self._pose_cols].to_numpy(dtype=np.float32)
+            self._buffered_action = {
+                "arm_actions":     target_pose,
+                "gripper_actions": np.array([-1.0], dtype=np.float32),
+            }
+        else:
+            self._buffered_action = _zero_action(self._action_dim)
+
+        print(f"\r[REPLAY-POSE] {step_idx + 1}/{len(self._data)}", end="")
+        return StepResult(obs_dict=None, action_dict=sent_action)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Logger
+# ──────────────────────────────────────────────────────────────────────────────
+
+class StepLogger:
+    """제어 루프에서 분리된 로깅 책임."""
+
+    def __init__(self, robot, obs_features: Features, log_features: Features):
+        self._robot = robot
+        self._obs_features = obs_features
+        self._log_features = log_features
+        self._buffer: List[dict] = []
+
+    def record(self, result: StepResult) -> None:
+        obs = result.obs_dict if result.obs_dict is not None else self._robot.get_observation()
+        record = obs_to_indexed(obs, self._obs_features)
+        record.update(flatten(self._robot.task.get_log(), self._log_features))
+        self._buffer.append(record)
+
+    def save(self, save_dir: str) -> None:
+        if not self._buffer:
+            return
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = os.path.join(save_dir, f"collected_data_{ts}.csv")
+        pd.DataFrame(self._buffer).to_csv(path, index=False)
+        print(f"\n[INFO] Saved {len(self._buffer)} steps → {path}")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Inference process manager
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class InferenceProcessHandle:
+    proc: mp.Process
+    stop_event: mp.Event
+
+    def wait_ready(self, action_flag: RawValue) -> None:
+        print("[INFO] Waiting for inference warm-up ...")
         while action_flag.value != 2:
-            time.sleep(0.1)
+            time.sleep(0.05)
         action_flag.value = 0
         print("[INFO] Inference process ready.")
-    else:
-        print("[INFO] --replay --pose 모드: inference 프로세스를 시작하지 않습니다.")
 
-    # =================================================================
-    # 3. 로봇 연결
-    # =================================================================
-    print("[INFO] Connecting to Robot...")
+    def shutdown(self) -> None:
+        self.stop_event.set()
+        self.proc.join(timeout=3)
 
-    try:
-        robot.connect()
-    except Exception as e:
-        print(f"[ERROR] Connection failed: {e}")
-        stop_event.set()
-        if infer_proc is not None:
-            infer_proc.join(timeout=3)
-        return
 
-    if not robot.is_connected:
-        print("[ERROR] Failed to connect to robot.")
-        stop_event.set()
-        if infer_proc is not None:
-            infer_proc.join(timeout=3)
-        return
+def start_inference_process(
+    obs_shm: torch.Tensor,
+    action_shm: torch.Tensor,
+    obs_flag: RawValue,
+    action_flag: RawValue,
+    *,
+    checkpoint: str,
+    cfg_path: str,
+    obs_dim: int,
+    action_dim: int,
+    device: str,
+) -> InferenceProcessHandle:
+    stop_event = mp.Event()
+    proc = mp.Process(
+        target=run_inference_process,
+        args=(obs_shm, action_shm, obs_flag, action_flag, stop_event),
+        kwargs=dict(
+            checkpoint=checkpoint,
+            cfg_path=cfg_path,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device_str=device,
+        ),
+        daemon=True,
+    )
+    proc.start()
+    return InferenceProcessHandle(proc=proc, stop_event=stop_event)
 
-    # =================================================================
-    # 4. CSV 데이터 로드 및 컬럼 검증
-    # =================================================================
-    replay_data = None
-    # --pose에서 사용할 target pose 컬럼명 (log_features 기반)
-    pose_cols_for_replay: List[str] = (
-        features_to_flat_keys({"target_pos": log_features["target_pos"]})
-        + features_to_flat_keys({"target_quat": log_features["target_quat"]})
-    ) if ("target_pos" in log_features and "target_quat" in log_features) else []
 
-    if args.replay:
-        print(f"[INFO] Loading CSV: {args.replay}")
-        replay_data = pd.read_csv(args.replay)
-        print(f"[INFO] Loaded {len(replay_data)} steps from CSV.")
+# ──────────────────────────────────────────────────────────────────────────────
+# Control loop
+# ──────────────────────────────────────────────────────────────────────────────
 
-        if args.raw:
-            # obs 컬럼은 observation_features 평탄화 키와 동일
-            expected_cols = [f"obs_{i}" for i in range(obs_dim)]
-            mode_label = f"obs_0 ~ obs_{obs_dim - 1}"
-        else:  # args.pose
-            if not pose_cols_for_replay:
-                print(
-                    "[ERROR] --pose 모드는 task.log_features에 "
-                    "'target_pos'와 'target_quat'가 필요합니다."
-                )
-                stop_event.set()
-                if infer_proc is not None:
-                    infer_proc.join(timeout=3)
-                return
-            expected_cols = pose_cols_for_replay
-            mode_label = ", ".join(expected_cols)
+def run_control_loop(
+    robot,
+    strategy: ControlStrategy,
+    *,
+    control_hz: float,
+    logger: Optional[StepLogger] = None,
+) -> None:
+    """Isaac Lab DirectRLEnv.step()과 동일한 action-first 순서로 제어 루프 실행.
 
-        missing_cols = [c for c in expected_cols if c not in replay_data.columns]
-        if missing_cols:
-            print(f"[ERROR] CSV에 필요한 컬럼이 없습니다: {missing_cols}")
-            stop_event.set()
-            if infer_proc is not None:
-                infer_proc.join(timeout=3)
-            return
-        print(f"[INFO] {mode_label} 컬럼 확인 완료.")
+    타임라인:
+        reset()  → obs_0 수집, zero action 버퍼화, 첫 inference 트리거
+        t=0: action_0 = wait_inference()  →  send(action_0)  →  obs_1, trigger infer(obs_1)
+        t=1: action_1 = wait_inference()  →  send(action_1)  →  obs_2, trigger infer(obs_2)
+        ...
 
-    # =================================================================
-    # 4. Control Loop 및 데이터 로깅 준비
-    # =================================================================
-    dt = 1.0 / args.control_hz
+    send / wait 순서가 Isaac Lab의 apply_action → sim.step → get_observations와 1:1 대응.
+    """
+    dt = 1.0 / control_hz
+    print(f"\n[INFO] Control loop @ {control_hz} Hz  (Ctrl+C to stop)")
+
+    strategy.reset()
+
     step_idx = 0
-    obs_buf = obs_shm.numpy()[0]
-
-    log_data: List[dict] = []
-
-    print(f"\n[INFO] Starting control loop at {args.control_hz} Hz. Ctrl+C to stop.")
-
     try:
         while True:
             t_start = time.time()
 
-            # --- A. Observation ---
-            t0 = time.perf_counter()
+            result = strategy.step(step_idx)
+            if result is None:
+                break
 
-            if args.replay and args.raw:
-                # Replay --raw: CSV의 obs_0~obs_N을 직접 shared memory에 씀
-                if step_idx >= len(replay_data):
-                    print("\n[INFO] Replay CSV finished.")
-                    break
-
-                obs_buf[:] = load_replay_obs(replay_data, step_idx, obs_dim)
-                obs_dict = None
-                print(f"[REPLAY-RAW] step {step_idx + 1}/{len(replay_data)}", end='\r')
-
-            elif args.replay and args.pose:
-                # Replay --pose: obs 없음. inference도 안 함.
-                if step_idx >= len(replay_data):
-                    print("\n[INFO] Replay CSV finished.")
-                    break
-
-                obs_dict = None
-                print(f"[REPLAY-POSE] step {step_idx + 1}/{len(replay_data)}", end='\r')
-
+            # strategy.step()이 반환한 action_dict를 실제로 로봇에 전송
+            # (pose 모드만 send_processed_action, 나머지는 send_action)
+            if isinstance(strategy, ReplayPoseStrategy):
+                print(f"result.action_dict: {result.action_dict}")
+                if result.action_dict:
+                    robot.send_processed_action(result.action_dict)
             else:
-                # 실시간 모드: 로봇에서 observation 수집
-                obs_dict = robot.get_observation()
+                robot.send_action(result.action_dict)
 
-            t1 = time.perf_counter()
+            if logger is not None:
+                logger.record(result)
 
-            # --- B. Obs → shared memory (실시간 모드만) ---
-            if not args.replay:
-                write_obs_to_shm(obs_dict, obs_buf, obs_features)
-            # replay --raw 모드는 A 단계에서 obs_buf에 직접 썼으므로 skip
-            # replay --pose 모드는 obs / inference 자체가 없으므로 skip
-            t2 = time.perf_counter()
-
-            # --- C. Action 결정 ---
-            if args.replay and args.pose:
-                target_pose_np = load_replay_target_pose(
-                    replay_data, step_idx, pose_cols_for_replay
-                )
-                action_np = None
-            else:
-                obs_flag.value = 1
-                while action_flag.value == 0:
-                    pass
-                action_flag.value = 0
-                action_np = action_shm.numpy().flatten()
-                target_pose_np = None
-            t3 = time.perf_counter()
-
-            # --- D. Action 전송 ---
-            if args.replay and args.pose:
-                action_dict = {
-                    "arm_actions": target_pose_np.astype(np.float32),
-                    "gripper_actions": np.array([-1.0], dtype=np.float32),
-                }
-                # directly controlled by target pose from csv
-                processed_action_dict = robot.send_processed_action(action_dict)
-            else:
-                arm_action_np = action_np[:action_dim].copy()
-                action_dict = {
-                    "arm_actions": arm_action_np,
-                    "gripper_actions": np.array([-1.0], dtype=np.float32),
-                }
-                # controlled by action related to observation from csv
-                processed_action_dict = robot.send_action(action_dict)
-            t4 = time.perf_counter()
-
-            # --- E. 데이터 로깅 (features 기반 자동화) ---
-            if args.save_path:
-                # obs 부분: 실시간 모드면 이미 받은 obs_dict 재사용,
-                #          replay 모드면 실제 로봇 상태로 새로 받아온다.
-                obs_for_log = obs_dict if obs_dict is not None else robot.get_observation()
-                record = flatten_obs_to_indexed(obs_for_log, obs_features)
-
-                # log 부분: task.get_log() 에 위임
-                log_dict = robot.task.get_log()
-                record.update(flatten_features(log_dict, log_features))
-
-                log_data.append(record)
-
-            # --- F. 주기 유지 ---
-            elapsed = time.time() - t_start
-            sleep_t = dt - elapsed
+            sleep_t = dt - (time.time() - t_start)
             if sleep_t > 0:
                 time.sleep(sleep_t)
 
@@ -467,24 +524,155 @@ def main():
 
     except KeyboardInterrupt:
         print("\n[INFO] Stopped by user.")
-    except Exception as e:
-        print(f"\n[ERROR] {e}")
-        raise
-    finally:
-        if log_data and args.save_path:
-            current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = os.path.join(args.save_path, f"collected_data_{current_time}.csv")
-            df = pd.DataFrame(log_data)
-            df.to_csv(save_path, index=False)
-            print(f"\n[INFO] Successfully saved {len(df)} steps to {save_path}")
 
-        stop_event.set()
-        if infer_proc is not None:
-            infer_proc.join(timeout=3)
-        cv2.destroyAllWindows()
-        if robot:
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CLI
+# ──────────────────────────────────────────────────────────────────────────────
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument("--task",           default="peg_insert")
+    p.add_argument("--checkpoint",     required=True)
+    p.add_argument("--cfg",            required=True)
+    p.add_argument("--device",         default="cuda:0")
+    p.add_argument("--control_hz",     type=float, default=15.0)
+    p.add_argument("--replay",         default=None, metavar="CSV")
+    p.add_argument("--save_path",      default=None)
+    p.add_argument("--use_cameras",    action="store_true")
+    p.add_argument("--use_ft_sensor",  action="store_true")
+    p.add_argument("--use_sim_time",   action="store_true")
+
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--raw",  action="store_true", help="Replay: CSV obs → inference")
+    mode.add_argument("--pose", action="store_true", help="Replay: CSV target pose → direct send")
+
+    args = p.parse_args()
+    if (args.raw or args.pose) and not args.replay:
+        p.error("--raw / --pose requires --replay")
+    if args.replay and not (args.raw or args.pose):
+        p.error("--replay requires --raw or --pose")
+    return args
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Entry point
+# ──────────────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
+    from lerobot_robot_fr3.fr3 import FR3Robot
+
+    args = parse_args()
+    needs_inference = not (args.replay and args.pose)
+
+    # ── Robot 객체 (connect 전에 task features 접근) ───────────────────────────
+    config = FR3RobotConfig(
+        use_sim_time=args.use_sim_time,
+        is_relative=False,
+        rotation_type="quaternion",
+        use_cameras=args.use_cameras,
+        use_ft_sensor=args.use_ft_sensor,
+    )
+    robot = FR3Robot(config, task_name=args.task)
+
+    obs_features    = robot.task.observation_features
+    log_features    = robot.task.log_features
+    action_features = robot.task.action_features
+    obs_dim    = total_dim(obs_features)
+    action_dim = total_dim({"arm_actions": action_features["arm_actions"]})
+    print(f"[INFO] obs_dim={obs_dim}  action_dim={action_dim}")
+
+    # ── Shared memory ─────────────────────────────────────────────────────────
+    obs_shm    = torch.zeros(1, obs_dim).share_memory_()
+    action_shm = torch.zeros(1, action_dim).share_memory_()
+    obs_flag    = RawValue(ctypes.c_int32, 0)
+    action_flag = RawValue(ctypes.c_int32, 0)
+
+    # ── Inference process ─────────────────────────────────────────────────────
+    infer_handle: Optional[InferenceProcessHandle] = None
+    if needs_inference:
+        infer_handle = start_inference_process(
+            obs_shm, action_shm, obs_flag, action_flag,
+            checkpoint=args.checkpoint,
+            cfg_path=args.cfg,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=args.device,
+        )
+        infer_handle.wait_ready(action_flag)
+
+    # ── Robot connect ─────────────────────────────────────────────────────────
+    print("[INFO] Connecting to robot ...")
+    try:
+        robot.connect()
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        if infer_handle:
+            infer_handle.shutdown()
+        return
+
+    if not robot.is_connected:
+        print("[ERROR] Failed to connect.")
+        if infer_handle:
+            infer_handle.shutdown()
+        return
+
+    # ── CSV 로드 & 컬럼 검증 ──────────────────────────────────────────────────
+    replay_data: Optional[pd.DataFrame] = None
+    pose_cols: List[str] = []
+
+    if args.replay:
+        replay_data = pd.read_csv(args.replay)
+        print(f"[INFO] Loaded {len(replay_data)} steps from {args.replay}")
+
+        if args.raw:
+            required = [f"obs_{i}" for i in range(obs_dim)]
+        else:
+            pose_cols = (
+                flat_keys({"target_pos":  log_features["target_pos"]})
+                + flat_keys({"target_quat": log_features["target_quat"]})
+            )
+            required = pose_cols
+
+        missing = [c for c in required if c not in replay_data.columns]
+        if missing:
+            print(f"[ERROR] CSV missing columns: {missing}")
+            if infer_handle:
+                infer_handle.shutdown()
             robot.disconnect()
-        print("[INFO] Robot disconnected safely.")
+            return
+
+    # ── Strategy 선택 ─────────────────────────────────────────────────────────
+    obs_buf = obs_shm.numpy()[0]
+
+    if args.replay and args.raw:
+        strategy: ControlStrategy = ReplayRawStrategy(
+            replay_data, obs_buf, obs_flag, action_flag,
+            action_shm, obs_dim, action_dim,
+        )
+    elif args.replay and args.pose:
+        strategy = ReplayPoseStrategy(replay_data, pose_cols, action_dim)
+    else:
+        strategy = LiveInferenceStrategy(
+            robot, obs_buf, obs_features,
+            obs_flag, action_flag, action_shm, action_dim,
+        )
+
+    # ── Logger ────────────────────────────────────────────────────────────────
+    logger = StepLogger(robot, obs_features, log_features) if args.save_path else None
+
+    # ── Control loop ──────────────────────────────────────────────────────────
+    try:
+        run_control_loop(robot, strategy, control_hz=args.control_hz, logger=logger)
+    finally:
+        if logger:
+            logger.save(args.save_path)
+        if infer_handle:
+            infer_handle.shutdown()
+        cv2.destroyAllWindows()
+        robot.disconnect()
+        print("[INFO] Robot disconnected.")
 
 
 if __name__ == "__main__":

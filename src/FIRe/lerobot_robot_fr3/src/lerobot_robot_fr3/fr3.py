@@ -225,6 +225,16 @@ class FR3Robot(Robot):
         processed_arm_action = self.task.get_arm_action(action)
         processed_gripper_action = self.task.get_gripper_action(action)
 
+        if np.allclose(processed_arm_action[:3], 0.0, atol=1e-6):
+            self.node.get_logger().warn(
+                "send_processed_action: target_pos is near-zero. "
+                "Replacing with current EE pose to prevent unsafe motion."
+            )
+            processed_arm_action = np.concatenate([
+                self.robot_state_manager.ee_pos,
+                self.robot_state_manager.ee_quat,
+            ]).astype(np.float32)
+
         self.apply_action(processed_arm_action, processed_gripper_action)
 
         processed_action = {
