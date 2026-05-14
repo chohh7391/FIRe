@@ -6,6 +6,7 @@ from ..factory.factory_cfg import (
 
 class ForgeCtrlCfg(CtrlCfg):
     ema_factor_range = [0.025, 0.1]
+    ema_factor = 0.0625
     default_task_prop_gains = [565.0, 565.0, 565.0, 28.0, 28.0, 28.0]
     task_prop_gains_noise_level = [0.41, 0.41, 0.41, 0.41, 0.41, 0.41]
     pos_threshold_noise_level = [0.25, 0.25, 0.25]
