@@ -63,14 +63,16 @@ class Forge(Factory):
         self.action[5] = self.prev_action[5] = yaw_action
         self.action[6] = self.prev_action[6] = -1.0
 
-        ema_rand = np.random.rand()
-        ema_lower, ema_upper = self.ctrl_cfg.ema_factor_range
-        self.ema_factor = ema_lower + ema_rand * (ema_upper - ema_lower)
+        # ema_rand = np.random.rand()
+        # ema_lower, ema_upper = self.ctrl_cfg.ema_factor_range
+        # self.ema_factor = ema_lower + ema_rand * (ema_upper - ema_lower)
+        # elimate randomness of ema_factor
+        self.ema_factor = self.ctrl_cfg.ema_factor
 
         contact_rand = np.random.rand()
         contact_lower, contact_upper = self.task_cfg.contact_penalty_threshold_range
         self.contact_penalty_thresholds = np.array(
-            [contact_lower + contact_rand * (contact_upper - contact_lower)], 
+            [contact_lower + contact_rand * (contact_upper - contact_lower)],
             dtype=np.float32
         )
 
@@ -118,7 +120,7 @@ class Forge(Factory):
     @property
     def action_features(self) -> Dict[str, Tuple[int, ...]]:
         return {
-            "arm_actions": (self.env_cfg.action_space,),
+            "arm_actions": (6,),
             "success_pred": (1,),
         }
 
