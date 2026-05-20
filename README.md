@@ -62,5 +62,5 @@ ros2 launch cho_task_manager run_task_manager.launch.py task:=forge
 
 # run model when VLACompletionWaiterBehavior is running
 ```bash
-python scripts/play.py --task factory-peg_insert --checkpoint /home/home/FIRe/checkpoints/Factory/peg_insert/nn/Factory.pth --cfg /home/home/FIRe/scripts/configs/factory.yaml --replay /home/home/FIRe/logs/factory/csv/sim/raw.csv --raw --save_path /home/home/FIRe/logs/factory/csv/real
+python scripts/play.py --task forge-peg_insert --checkpoint /home/home/FIRe/checkpoints/Forge/peg_insert/nn/Forge.pth --cfg /home/home/FIRe/src/FIRe/lerobot_robot_fr3/src/lerobot_robot_fr3/tasks/forge/agents/forge-peg_insert.yaml --replay /home/home/FIRe/logs/forge/csv/sim/origin.csv --raw --save_path /home/home/FIRe/logs/forge/csv/real
 ```

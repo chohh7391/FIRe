@@ -570,7 +570,7 @@ def main() -> None:
     log_features    = robot.task.log_features
     action_features = robot.task.action_features
     obs_dim    = total_dim(obs_features)
-    action_dim = total_dim({"arm_actions": action_features["arm_actions"]})
+    action_dim = total_dim(action_features)
     print(f"[INFO] obs_dim={obs_dim}  action_dim={action_dim}")
 
     # ── Shared memory ─────────────────────────────────────────────────────────
