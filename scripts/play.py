@@ -233,6 +233,7 @@ class StepResult:
     action_dict: dict              # 이번 스텝에 send할 raw policy action
     policy_action: Optional[np.ndarray] = None
     obs_array: Optional[np.ndarray] = None
+    model_obs_array: Optional[np.ndarray] = None
     metadata: Optional[dict] = None
     processed_action: Optional[dict] = None
 
@@ -324,7 +325,7 @@ class LiveInferenceStrategy(ControlStrategy):
 
 
 class ReplayRawStrategy(ControlStrategy):
-    """Replay --raw: CSV obs → inference → action (Isaac Lab 순서)."""
+    """Replay --raw: CSV obs → inference → action, while logging live robot obs."""
 
     def __init__(self, replay_data: pd.DataFrame, obs_buf: np.ndarray,
                  obs_flag: RawValue, action_flag: RawValue,
@@ -426,12 +427,14 @@ class ReplayRawStrategy(ControlStrategy):
             "gripper_actions": np.array([-1.0], dtype=np.float32),
         }
 
+        obs_dict = self._robot.get_observation() if self._robot is not None else None
+
         print(f"\r[REPLAY-RAW] {step_idx + 1}/{len(self._data)}", end="")
         return StepResult(
-            obs_dict=None,
-            obs_array=self._pending_obs_np,
+            obs_dict=obs_dict,
             action_dict=self._buffered_action,
             policy_action=arm_action,
+            model_obs_array=self._pending_obs_np,
             metadata=self._row_metadata(step_idx),
         )
 
@@ -497,6 +500,9 @@ class StepLogger:
 
     def record(self, result: StepResult) -> None:
         record = dict(result.metadata or {})
+
+        if result.model_obs_array is not None:
+            record.update(flat_array_to_indexed("model_obs", result.model_obs_array))
 
         if result.obs_array is not None:
             record.update(flat_array_to_indexed("obs", result.obs_array))
@@ -700,7 +706,7 @@ def main() -> None:
     log_features    = robot.task.log_features
     action_features = robot.task.action_features
     obs_dim    = total_dim(obs_features)
-    action_dim = total_dim({"arm_actions": action_features["arm_actions"]})
+    action_dim = total_dim(action_features)
     print(f"[INFO] obs_dim={obs_dim}  action_dim={action_dim}")
 
     # ── Shared memory ─────────────────────────────────────────────────────────
