@@ -7,6 +7,7 @@ Step ordering — mirrors Isaac Lab DirectRLEnv
 Isaac Lab:
   reset()  →  obs_0  (zero action initialized)
   loop:
+    action_t = policy(obs_t)     # deterministic policy output
     pre_physics_step(action_t)   # buffer action
     apply_action()               # send buffered action → robot/sim
     sim.step()                   # physics
@@ -15,11 +16,10 @@ Isaac Lab:
 This runner:
   connect()  →  obs_0  (zero action initialized)
   loop:
+    action_t = infer(obs_t)      # deterministic policy output
     send_action(action_t)        # apply buffered action first  ← pre_physics + apply_action
     obs_t+1 = get_observation()  # collect obs after physics    ← get_observations
     action_t+1 = infer(obs_t+1)  # compute next action (async)  ← policy
-
-  action_0 is always zeros (safe neutral action for the first step).
 
 Architecture
 ------------
@@ -93,6 +93,11 @@ def obs_to_indexed(obs: Dict[str, np.ndarray], features: Features) -> Dict[str, 
     return out
 
 
+def flat_array_to_indexed(prefix: str, values: np.ndarray) -> Dict[str, float]:
+    arr = np.asarray(values, dtype=np.float32).ravel()
+    return {f"{prefix}_{i}": float(v) for i, v in enumerate(arr)}
+
+
 def write_obs_shm(obs: dict, buf: np.ndarray, features: Features) -> None:
     """shared memory에 obs를 직접 slice-write (GIL 최소화)."""
     offset = 0
@@ -102,19 +107,29 @@ def write_obs_shm(obs: dict, buf: np.ndarray, features: Features) -> None:
         offset += dim
 
 
+def feature_slice(features: Features, name: str) -> Optional[slice]:
+    offset = 0
+    for key, shape in features.items():
+        dim = int(np.prod(shape))
+        if key == name:
+            return slice(offset, offset + dim)
+        offset += dim
+    return None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Inference process (Process B)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _build_dummy_env(obs_dim: int, action_dim: int, device: torch.device):
+def _build_dummy_env(obs_dim: int, action_dim: int, device: torch.device, clip_actions: float):
     """rl-games가 요구하는 최소 env 인터페이스."""
 
     class _DummyEnv:
         observation_space = type("S", (), {"shape": (obs_dim,)})()
         action_space = type("S", (), {
             "shape": (action_dim,),
-            "high":  np.ones(action_dim, dtype=np.float32),
-            "low":  -np.ones(action_dim, dtype=np.float32),
+            "high":  np.full(action_dim, clip_actions, dtype=np.float32),
+            "low":  np.full(action_dim, -clip_actions, dtype=np.float32),
         })()
         num_envs = 1
 
@@ -157,10 +172,12 @@ def run_inference_process(
     })
     cfg["params"]["config"].update({
         "device": str(device),
+        "device_name": str(device),
         "num_actors": 1,
     })
 
-    dummy_env = _build_dummy_env(obs_dim, action_dim, device)
+    clip_actions = float(cfg["params"]["env"].get("clip_actions", 1.0))
+    dummy_env = _build_dummy_env(obs_dim, action_dim, device, clip_actions)
     vecenv.register("IsaacRlgWrapper", lambda *_, **__: dummy_env)
     env_configurations.register("rlgpu", {
         "vecenv_type": "IsaacRlgWrapper",
@@ -169,9 +186,17 @@ def run_inference_process(
 
     runner = Runner()
     runner.load(cfg)
+    # FIRe's rl-games fork enables CUDA matmul TF32 in Runner.__init__ for speed.
+    # The sim environment keeps PyTorch's default matmul precision, so restore
+    # those defaults for action comparisons.
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = True
+    torch.set_float32_matmul_precision("highest")
     agent = runner.create_player()
     agent.restore(checkpoint)
     agent.reset()
+    dummy_obs = torch.zeros(1, obs_dim, device=device)
+    _ = agent.get_batch_size(dummy_obs, 1)
     if agent.is_rnn:
         agent.init_rnn()
 
@@ -204,30 +229,35 @@ def run_inference_process(
 
 @dataclass
 class StepResult:
-    obs_dict: Optional[dict]   # 실제 로봇 obs (로깅용; None이면 logger가 직접 수집)
-    action_dict: dict          # 이번 스텝에 send한 action (로깅용)
+    obs_dict: Optional[dict]       # policy_action을 만든 observation dict
+    action_dict: dict              # 이번 스텝에 send할 raw policy action
+    policy_action: Optional[np.ndarray] = None
+    obs_array: Optional[np.ndarray] = None
+    metadata: Optional[dict] = None
+    processed_action: Optional[dict] = None
 
 
 class ControlStrategy(ABC):
     """Isaac Lab DirectRLEnv와 동일한 action-first 스텝 순서를 구현하는 전략.
 
-    각 step() 호출은 다음 순서로 동작:
-      1. send_action(buffered_action_t)   ← apply_action()에 대응
-      2. get_observation()  →  obs_t+1   ← get_observations()에 대응
-      3. infer(obs_t+1)  →  buffer action_t+1   ← policy (비동기)
-
-    첫 스텝(step_idx=0)의 buffered action은 zeros.
+    reset()에서 obs_0 inference를 미리 걸고, step()은 pending obs_t로부터
+    계산된 action_t를 반환한다. action_t 전송 이후 after_action_sent()가
+    obs_t+1을 준비하고 다음 inference를 트리거한다.
     """
 
     @abstractmethod
     def reset(self) -> dict:
-        """로봇 초기 obs를 수집하고 내부 action 버퍼를 zeros로 초기화."""
+        """첫 inference 입력을 준비하고 내부 action 버퍼를 초기화."""
         ...
 
     @abstractmethod
     def step(self, step_idx: int) -> Optional[StepResult]:
         """None 반환 시 루프 종료."""
         ...
+
+    def after_action_sent(self, step_idx: int, result: StepResult) -> StepResult:
+        """Action 전송 이후 다음 inference 입력을 준비한다."""
+        return result
 
 
 def _zero_action(action_dim: int) -> dict:
@@ -251,6 +281,7 @@ class LiveInferenceStrategy(ControlStrategy):
         self._action_shm = action_shm
         self._action_dim = action_dim
         self._buffered_action: dict = _zero_action(action_dim)
+        self._pending_obs_dict: Optional[dict] = None
 
     def _wait_inference(self) -> np.ndarray:
         while self._action_flag.value == 0:
@@ -265,26 +296,31 @@ class LiveInferenceStrategy(ControlStrategy):
     def reset(self) -> dict:
         self._buffered_action = _zero_action(self._action_dim)
         obs_dict = self._robot.get_observation()
-        # 첫 obs로 첫 inference를 미리 트리거 → step(0)에서 바로 action 사용
+        self._pending_obs_dict = obs_dict
+        # 첫 obs로 첫 inference를 미리 트리거 -> step(0)에서 바로 action 사용
         self._trigger_inference(obs_dict)
         return obs_dict
 
     def step(self, step_idx: int) -> Optional[StepResult]:
-        # 1. inference 결과를 회수해 action 버퍼 갱신
+        # 1. pending obs_t로 계산된 inference 결과를 회수해 action_t 구성
         arm_action = self._wait_inference()
         self._buffered_action = {
             "arm_actions":     arm_action,
             "gripper_actions": np.array([-1.0], dtype=np.float32),
         }
 
-        # 2. 버퍼된 action을 로봇에 적용 (apply_action에 대응)
-        #    → run_control_loop에서 send_action 호출
+        return StepResult(
+            obs_dict=self._pending_obs_dict,
+            action_dict=self._buffered_action,
+            policy_action=arm_action,
+        )
 
-        # 3. obs 수집 후 다음 inference 트리거 (get_observations에 대응)
+    def after_action_sent(self, step_idx: int, result: StepResult) -> StepResult:
+        # action_t 전송 이후 obs_{t+1}을 수집하고 다음 inference를 준비
         obs_dict = self._robot.get_observation()
+        self._pending_obs_dict = obs_dict
         self._trigger_inference(obs_dict)
-
-        return StepResult(obs_dict=obs_dict, action_dict=self._buffered_action)
+        return result
 
 
 class ReplayRawStrategy(ControlStrategy):
@@ -292,7 +328,8 @@ class ReplayRawStrategy(ControlStrategy):
 
     def __init__(self, replay_data: pd.DataFrame, obs_buf: np.ndarray,
                  obs_flag: RawValue, action_flag: RawValue,
-                 action_shm: torch.Tensor, obs_dim: int, action_dim: int):
+                 action_shm: torch.Tensor, obs_dim: int, action_dim: int,
+                 robot=None, obs_features: Optional[Features] = None):
         self._data = replay_data
         self._obs_buf = obs_buf
         self._obs_flag = obs_flag
@@ -301,10 +338,22 @@ class ReplayRawStrategy(ControlStrategy):
         self._obs_dim = obs_dim
         self._action_dim = action_dim
         self._buffered_action: dict = _zero_action(action_dim)
+        self._robot = robot
+        self._obs_features = obs_features
+        self._pending_obs_np: Optional[np.ndarray] = None
 
     def _load_obs_row(self, step_idx: int) -> np.ndarray:
         row = self._data.iloc[step_idx]
         return row[[f"obs_{i}" for i in range(self._obs_dim)]].to_numpy(dtype=np.float32)
+
+    def _row_metadata(self, step_idx: int) -> dict:
+        row = self._data.iloc[step_idx]
+        metadata = {}
+        for col in ("episode", "step"):
+            if col in self._data.columns:
+                value = row[col]
+                metadata[col] = int(value) if float(value).is_integer() else float(value)
+        return metadata
 
     def _trigger_inference(self, obs_np: np.ndarray) -> None:
         self._obs_buf[:] = obs_np
@@ -316,10 +365,53 @@ class ReplayRawStrategy(ControlStrategy):
         self._action_flag.value = 0
         return self._action_shm.numpy().flatten()[: self._action_dim].copy()
 
+    def _sync_initial_action_from_obs(self, obs_np: np.ndarray) -> None:
+        if self._robot is None or self._obs_features is None:
+            return
+
+        prev_slice = feature_slice(self._obs_features, "prev_actions")
+        if prev_slice is None:
+            print("[WARN] Replay raw initial action sync skipped: prev_actions not in obs_features.")
+            return
+
+        task = getattr(self._robot, "task", None)
+        if task is None:
+            print("[WARN] Replay raw initial action sync skipped: robot has no task.")
+            return
+
+        prev_actions = obs_np[prev_slice].astype(np.float32, copy=True)
+
+        synced = False
+        for action_name, prev_name in (("action", "prev_action"), ("actions", "prev_actions")):
+            if not hasattr(task, action_name):
+                continue
+
+            action_arr = getattr(task, action_name)
+            dim = min(np.asarray(action_arr).size, prev_actions.size)
+            next_action = np.asarray(action_arr, dtype=np.float32).copy()
+            next_action.reshape(-1)[:dim] = prev_actions[:dim]
+            setattr(task, action_name, next_action.reshape(np.asarray(action_arr).shape))
+
+            if hasattr(task, prev_name):
+                prev_arr = getattr(task, prev_name)
+                next_prev = np.asarray(prev_arr, dtype=np.float32).copy()
+                prev_dim = min(next_prev.size, prev_actions.size)
+                next_prev.reshape(-1)[:prev_dim] = prev_actions[:prev_dim]
+                setattr(task, prev_name, next_prev.reshape(np.asarray(prev_arr).shape))
+
+            synced = True
+
+        if synced:
+            print("[INFO] Replay raw initial EMA state synced from obs_0.prev_actions.")
+        else:
+            print("[WARN] Replay raw initial action sync skipped: task has no action buffer.")
+
     def reset(self) -> dict:
         self._buffered_action = _zero_action(self._action_dim)
         # 첫 obs로 첫 inference를 미리 트리거
-        self._trigger_inference(self._load_obs_row(0))
+        self._pending_obs_np = self._load_obs_row(0)
+        self._sync_initial_action_from_obs(self._pending_obs_np)
+        self._trigger_inference(self._pending_obs_np)
         return {}
 
     def step(self, step_idx: int) -> Optional[StepResult]:
@@ -327,22 +419,30 @@ class ReplayRawStrategy(ControlStrategy):
             print("\n[INFO] Replay CSV finished.")
             return None
 
-        # 1. 이전에 트리거된 inference 결과를 회수
+        # 1. row step_idx의 obs_t로 계산된 inference 결과를 회수
         arm_action = self._wait_inference()
         self._buffered_action = {
             "arm_actions":     arm_action,
             "gripper_actions": np.array([-1.0], dtype=np.float32),
         }
 
-        # 2. 버퍼된 action 전송은 run_control_loop에서 담당
-
-        # 3. 다음 스텝 obs로 다음 inference를 미리 트리거
-        next_idx = step_idx + 1
-        if next_idx < len(self._data):
-            self._trigger_inference(self._load_obs_row(next_idx))
-
         print(f"\r[REPLAY-RAW] {step_idx + 1}/{len(self._data)}", end="")
-        return StepResult(obs_dict=None, action_dict=self._buffered_action)
+        return StepResult(
+            obs_dict=None,
+            obs_array=self._pending_obs_np,
+            action_dict=self._buffered_action,
+            policy_action=arm_action,
+            metadata=self._row_metadata(step_idx),
+        )
+
+    def after_action_sent(self, step_idx: int, result: StepResult) -> StepResult:
+        next_idx = step_idx + 1
+        if next_idx >= len(self._data):
+            return result
+
+        self._pending_obs_np = self._load_obs_row(next_idx)
+        self._trigger_inference(self._pending_obs_np)
+        return result
 
 
 class ReplayPoseStrategy(ControlStrategy):
@@ -396,8 +496,36 @@ class StepLogger:
         self._buffer: List[dict] = []
 
     def record(self, result: StepResult) -> None:
-        obs = result.obs_dict if result.obs_dict is not None else self._robot.get_observation()
-        record = obs_to_indexed(obs, self._obs_features)
+        record = dict(result.metadata or {})
+
+        if result.obs_array is not None:
+            record.update(flat_array_to_indexed("obs", result.obs_array))
+        else:
+            obs = result.obs_dict if result.obs_dict is not None else self._robot.get_observation()
+            record.update(obs_to_indexed(obs, self._obs_features))
+
+        policy_action = result.policy_action
+        if policy_action is None and result.action_dict:
+            policy_action = result.action_dict.get("arm_actions")
+        if policy_action is not None:
+            record.update(flat_array_to_indexed("policy_action", policy_action))
+            # Legacy alias: old sim CSVs used normalized_action for policy output.
+            record.update(flat_array_to_indexed("normalized_action", policy_action))
+
+        task_action = getattr(self._robot.task, "action", None)
+        if task_action is not None:
+            record.update(flat_array_to_indexed("ema_action", task_action))
+            # Legacy alias: old sim CSVs used raw_action for EMA-smoothed action.
+            record.update(flat_array_to_indexed("raw_action", task_action))
+
+        if result.processed_action is not None:
+            processed_arm = result.processed_action.get("processed_arm_action")
+            processed_gripper = result.processed_action.get("processed_gripper_action")
+            if processed_arm is not None:
+                record.update(flat_array_to_indexed("processed_arm_action", processed_arm))
+            if processed_gripper is not None:
+                record.update(flat_array_to_indexed("processed_gripper_action", processed_gripper))
+
         record.update(flatten(self._robot.task.get_log(), self._log_features))
         self._buffer.append(record)
 
@@ -474,7 +602,7 @@ def run_control_loop(
     """Isaac Lab DirectRLEnv.step()과 동일한 action-first 순서로 제어 루프 실행.
 
     타임라인:
-        reset()  → obs_0 수집, zero action 버퍼화, 첫 inference 트리거
+        reset()  → obs_0 수집, 첫 inference 트리거
         t=0: action_0 = wait_inference()  →  send(action_0)  →  obs_1, trigger infer(obs_1)
         t=1: action_1 = wait_inference()  →  send(action_1)  →  obs_2, trigger infer(obs_2)
         ...
@@ -499,12 +627,14 @@ def run_control_loop(
             # (pose 모드만 send_processed_action, 나머지는 send_action)
             if isinstance(strategy, ReplayPoseStrategy):
                 if result.action_dict:
-                    robot.send_processed_action(result.action_dict)
+                    result.processed_action = robot.send_processed_action(result.action_dict)
             else:
-                robot.send_action(result.action_dict)
+                result.processed_action = robot.send_action(result.action_dict)
 
             if logger is not None:
                 logger.record(result)
+
+            result = strategy.after_action_sent(step_idx, result)
 
             sleep_t = dt - (time.time() - t_start)
             if sleep_t > 0:
@@ -570,7 +700,7 @@ def main() -> None:
     log_features    = robot.task.log_features
     action_features = robot.task.action_features
     obs_dim    = total_dim(obs_features)
-    action_dim = total_dim(action_features)
+    action_dim = total_dim({"arm_actions": action_features["arm_actions"]})
     print(f"[INFO] obs_dim={obs_dim}  action_dim={action_dim}")
 
     # ── Shared memory ─────────────────────────────────────────────────────────
@@ -640,6 +770,7 @@ def main() -> None:
         strategy: ControlStrategy = ReplayRawStrategy(
             replay_data, obs_buf, obs_flag, action_flag,
             action_shm, obs_dim, action_dim,
+            robot=robot, obs_features=obs_features,
         )
     elif args.replay and args.pose:
         strategy = ReplayPoseStrategy(replay_data, pose_cols, action_dim)
