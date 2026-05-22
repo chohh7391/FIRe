@@ -12,7 +12,7 @@ def main():
     config = FTSensorConfig()
 
     node.get_logger().info("Initializing FT Sensor Manager...")
-    ft_sensor_manager = FTSensorManager(node=node, config=config)
+    ft_sensor_manager = FTSensorManager(node=node, config=config)  # publish /ft_sensor/wrench
     ft_sensor_manager.connect()
 
     def print_data_callback():
