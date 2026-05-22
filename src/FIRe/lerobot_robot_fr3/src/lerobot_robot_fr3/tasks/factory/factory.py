@@ -67,6 +67,31 @@ class Factory(Task):
         }
 
         return obs_dict
+    
+    def get_vla_observation(self) -> Dict[str, np.ndarray]:
+
+        if self.camera_sensor is not None:
+            camera_data = self.camera_sensor.data
+        else:
+            camera_data = {
+                "left": np.zeros((480, 640, 3), dtype=np.uint8),
+                "right": np.zeros((480, 640, 3), dtype=np.uint8),
+                "wrist": np.zeros((480, 640, 3), dtype=np.uint8),
+            }
+
+        left_camera_data = camera_data["left"]
+        right_camera_data = camera_data["right"]
+        wrist_camera_data = camera_data["wrist"]
+        
+        vla_obs = {
+            "video.left_view": left_camera_data,
+            "video.right_view": right_camera_data,
+            "video.wrist_view": wrist_camera_data,
+            "state.eef_position": self.robot.ee_pos,
+            "state.eef_quaternion": self.robot.ee_quat,
+            "state.gripper_qpos": self.robot.gripper_qpos,
+        }
+        return vla_obs
 
     def get_arm_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
         return action["arm_actions"]

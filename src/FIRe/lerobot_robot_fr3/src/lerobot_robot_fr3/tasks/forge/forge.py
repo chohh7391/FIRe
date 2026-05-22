@@ -95,6 +95,9 @@ class Forge(Factory):
         })
 
         return obs_dict
+    
+    def get_gr00t_observation(self) -> Dict[str, np.ndarray]:
+        return super().get_gr00t_observation()
 
     def get_arm_action(self, action):
         return super().get_arm_action(action)

@@ -50,71 +50,9 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.multiprocessing as mp
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Feature utilities
-# ──────────────────────────────────────────────────────────────────────────────
-
-Features = Dict[str, Tuple[int, ...]]
-
-
-def total_dim(features: Features) -> int:
-    return sum(int(np.prod(s)) for s in features.values())
-
-
-def flat_keys(features: Features) -> List[str]:
-    keys: List[str] = []
-    for name, shape in features.items():
-        for i in range(int(np.prod(shape))):
-            keys.append(f"{name}_{i}")
-    return keys
-
-
-def flatten(data: Dict[str, np.ndarray], features: Features) -> Dict[str, float]:
-    out: Dict[str, float] = {}
-    for key, shape in features.items():
-        arr = np.asarray(data[key], dtype=np.float32).ravel()
-        dim = int(np.prod(shape))
-        for i in range(dim):
-            out[f"{key}_{i}"] = float(arr[i])
-    return out
-
-
-def obs_to_indexed(obs: Dict[str, np.ndarray], features: Features) -> Dict[str, float]:
-    """obs_features 순서대로 obs_0 ~ obs_N 형태로 직렬화."""
-    out: Dict[str, float] = {}
-    idx = 0
-    for key, shape in features.items():
-        arr = np.asarray(obs[key], dtype=np.float32).ravel()
-        for v in arr[: int(np.prod(shape))]:
-            out[f"obs_{idx}"] = float(v)
-            idx += 1
-    return out
-
-
-def flat_array_to_indexed(prefix: str, values: np.ndarray) -> Dict[str, float]:
-    arr = np.asarray(values, dtype=np.float32).ravel()
-    return {f"{prefix}_{i}": float(v) for i, v in enumerate(arr)}
-
-
-def write_obs_shm(obs: dict, buf: np.ndarray, features: Features) -> None:
-    """shared memory에 obs를 직접 slice-write (GIL 최소화)."""
-    offset = 0
-    for key, shape in features.items():
-        dim = int(np.prod(shape))
-        buf[offset : offset + dim] = np.asarray(obs[key], dtype=np.float32).ravel()[:dim]
-        offset += dim
-
-
-def feature_slice(features: Features, name: str) -> Optional[slice]:
-    offset = 0
-    for key, shape in features.items():
-        dim = int(np.prod(shape))
-        if key == name:
-            return slice(offset, offset + dim)
-        offset += dim
-    return None
+from lerobot_robot_fr3.utils.runner.utils import (
+    Features, total_dim, flat_keys, flatten, obs_to_indexed, flat_array_to_indexed, write_obs_shm, feature_slice,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -271,9 +209,12 @@ def _zero_action(action_dim: int) -> dict:
 class LiveInferenceStrategy(ControlStrategy):
     """실시간: action apply → obs 수집 → inference (Isaac Lab 순서)."""
 
-    def __init__(self, robot, obs_buf: np.ndarray, obs_features: Features,
-                 obs_flag: RawValue, action_flag: RawValue,
-                 action_shm: torch.Tensor, action_dim: int):
+    def __init__(
+        self, robot, obs_buf: np.ndarray, obs_features: Features,
+        obs_flag: RawValue, action_flag: RawValue,
+        action_shm: torch.Tensor,
+        action_dim: int,
+    ):
         self._robot = robot
         self._obs_buf = obs_buf
         self._obs_features = obs_features
@@ -297,6 +238,7 @@ class LiveInferenceStrategy(ControlStrategy):
     def reset(self) -> dict:
         self._buffered_action = _zero_action(self._action_dim)
         obs_dict = self._robot.get_observation()
+        vla_obs_dict = self._robot.get_vla_observation()
         self._pending_obs_dict = obs_dict
         # 첫 obs로 첫 inference를 미리 트리거 -> step(0)에서 바로 action 사용
         self._trigger_inference(obs_dict)
@@ -322,6 +264,64 @@ class LiveInferenceStrategy(ControlStrategy):
         self._pending_obs_dict = obs_dict
         self._trigger_inference(obs_dict)
         return result
+    
+class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
+    def __init__(self, robot, obs_buf, obs_features,
+                 obs_flag, action_flag, action_shm, action_dim,
+                 *, vla_policy, vla_chunk_size: int = 16):
+        super().__init__(robot, obs_buf, obs_features,
+                         obs_flag, action_flag, action_shm, action_dim)
+        self._vla = vla_policy
+        self._chunk_size = int(vla_chunk_size)
+        self._vla_chunk: Optional[np.ndarray] = None
+        self._vla_requested = False
+
+    def _build_vla_chunk(self, raw_actions: dict) -> np.ndarray:
+        pos = np.asarray(raw_actions["action.eef_position_delta"], dtype=np.float32)
+        rot = np.asarray(raw_actions["action.eef_rotation_delta"], dtype=np.float32)
+        if pos.ndim == 3: pos = pos.squeeze(0)
+        if rot.ndim == 3: rot = rot.squeeze(0)
+        chunk = np.concatenate([pos, rot], axis=-1)            # (chunk, 6)
+        if chunk.shape[-1] < self._action_dim:                  # FORGE success-bit pad
+            pad = np.zeros((chunk.shape[0], self._action_dim - chunk.shape[-1]),
+                           dtype=np.float32)
+            chunk = np.concatenate([chunk, pad], axis=-1)
+        return chunk
+
+    def reset(self) -> dict:
+        obs_dict = super().reset()                              # 첫 RL trigger
+        vla_obs = self._robot.get_vla_observation()
+        raw = self._vla.get_action_sync(vla_obs)                # 첫 chunk 동기 수신
+        self._vla_chunk = self._build_vla_chunk(raw)
+        self._vla_requested = False
+        return obs_dict
+
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        chunk_idx = step_idx % self._chunk_size
+
+        if chunk_idx == 0 and step_idx != 0:                    # 새 chunk 회수
+            try:
+                self._vla_chunk = self._build_vla_chunk(self._vla.get_result())
+            except Exception as e:
+                print(f"[WARN] VLA get_result failed: {e}, reusing previous chunk.")
+            self._vla_requested = False
+
+        if chunk_idx == self._chunk_size // 2 and not self._vla_requested:  # 비동기 요청
+            self._vla.request_action(self._robot.get_vla_observation())
+            self._vla_requested = True
+
+        rl_action = self._wait_inference()                      # RL action
+        combined = (rl_action + self._vla_chunk[chunk_idx]).astype(np.float32)
+
+        self._buffered_action = {
+            "arm_actions":     combined,
+            "gripper_actions": np.array([-1.0], dtype=np.float32),
+        }
+        return StepResult(
+            obs_dict=self._pending_obs_dict,
+            action_dict=self._buffered_action,
+            policy_action=combined,
+        )
 
 
 class ReplayRawStrategy(ControlStrategy):
@@ -668,6 +668,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use_cameras",    action="store_true")
     p.add_argument("--use_ft_sensor",  action="store_true")
     p.add_argument("--use_sim_time",   action="store_true")
+    p.add_argument("--vla", type=str, default=None, choices=["gr00t", "pi05"])
+    p.add_argument("--vla_chunk_size", type=int, default=16)
 
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--raw",  action="store_true", help="Replay: CSV obs → inference")
@@ -688,6 +690,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
     from lerobot_robot_fr3.fr3 import FR3Robot
+    from lerobot_robot_fr3.utils.vla_client import (
+        AsyncGr00tInferenceClient, AsyncPi05InferenceClient,
+    )
 
     args = parse_args()
     needs_inference = not (args.replay and args.pose)
@@ -715,6 +720,13 @@ def main() -> None:
     obs_flag    = RawValue(ctypes.c_int32, 0)
     action_flag = RawValue(ctypes.c_int32, 0)
 
+    if args.vla == "gr00t":
+        vla_policy = AsyncGr00tInferenceClient()
+    elif args.vla == "pi05":
+        vla_policy = AsyncPi05InferenceClient()
+    else:
+        vla_policy = None
+    
     # ── Inference process ─────────────────────────────────────────────────────
     infer_handle: Optional[InferenceProcessHandle] = None
     if needs_inference:
@@ -781,10 +793,18 @@ def main() -> None:
     elif args.replay and args.pose:
         strategy = ReplayPoseStrategy(replay_data, pose_cols, action_dim)
     else:
-        strategy = LiveInferenceStrategy(
-            robot, obs_buf, obs_features,
-            obs_flag, action_flag, action_shm, action_dim,
-        )
+        if vla_policy is not None:
+            strategy = LiveInferenceWithVLAStrategy(
+                robot, obs_buf, obs_features,
+                obs_flag, action_flag, action_shm, action_dim,
+                vla_policy=vla_policy,
+                vla_chunk_size=args.vla_chunk_size,
+            )
+        else:
+            strategy = LiveInferenceStrategy(
+                robot, obs_buf, obs_features,
+                obs_flag, action_flag, action_shm, action_dim,
+            )
 
     # ── Logger ────────────────────────────────────────────────────────────────
     logger = StepLogger(robot, obs_features, log_features) if args.save_path else None
