@@ -106,6 +106,14 @@ class RobotStateManager:
     def ee_angvel(self) -> np.ndarray:
         """return np.array([ax, ay, az])"""
         return self.ee_vel[3:6]
+    
+    @property
+    def gripper_qpos(self) -> np.ndarray:
+        return self.gripper_joint_states["position"]
+    
+    @property
+    def gripper_qvel(self) -> np.ndarray:
+        return self.gripper_joint_states["velocity"]
 
     def _update_joint_states(self, msg: JointState):
         with self._state_lock:
