@@ -21,12 +21,10 @@ except ImportError:
         "Please source your ROS 2 workspace."
     )
 
-from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.robots import Robot
 from lerobot.processor import RobotAction, RobotObservation
 from .config_fr3 import FR3RobotConfig
 from .utils import RobotStateManager, CameraSensorManager, FTSensorManager
-from lerobot_ft_sensor.ft_sensor import FTSensor
 from .utils.rotation_utils import wxyz2xyzw
 from .tasks import Task
 from . import create_task
