@@ -32,9 +32,7 @@ class FR3RobotConfig(RobotConfig):
     use_cameras: bool = False
     use_ft_sensor: bool = False
     
-    ft_sensor: FTSensorConfig = FTSensorConfig(
-        config_path="/home/home/FIRe/src/FIRe/lerobot_ft_sensor/src/lerobot_ft_sensor/config/bota_binary.json"
-    )
+    ft_sensor: FTSensorConfig = FTSensorConfig()
     cameras: Dict[str, CameraConfig] = field(
         default_factory=lambda: {
             "wrist": ZMQCameraConfig(
