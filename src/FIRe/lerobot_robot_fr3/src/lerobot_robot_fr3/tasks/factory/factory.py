@@ -74,9 +74,9 @@ class Factory(Task):
             camera_data = self.camera_sensor.data
         else:
             camera_data = {
-                "left": np.zeros((480, 640, 3), dtype=np.uint8),
-                "right": np.zeros((480, 640, 3), dtype=np.uint8),
-                "wrist": np.zeros((480, 640, 3), dtype=np.uint8),
+                "left": np.zeros((256, 256, 3), dtype=np.uint8),
+                "right": np.zeros((256, 256, 3), dtype=np.uint8),
+                "wrist": np.zeros((256, 256, 3), dtype=np.uint8),
             }
 
         left_camera_data = camera_data["left"]
@@ -84,12 +84,12 @@ class Factory(Task):
         wrist_camera_data = camera_data["wrist"]
         
         vla_obs = {
-            "video.left_view": left_camera_data,
-            "video.right_view": right_camera_data,
-            "video.wrist_view": wrist_camera_data,
-            "state.eef_position": self.robot.ee_pos,
-            "state.eef_quaternion": self.robot.ee_quat,
-            "state.gripper_qpos": self.robot.gripper_qpos,
+            "video.left_view": np.expand_dims(left_camera_data.astype(np.uint8), axis=(0, 1)),
+            "video.right_view": np.expand_dims(right_camera_data.astype(np.uint8), axis=(0, 1)),
+            "video.wrist_view": np.expand_dims(wrist_camera_data.astype(np.uint8), axis=(0, 1)),
+            "state.eef_position": np.expand_dims(self.robot.ee_pos.astype(np.float64), axis=(0, 1)),
+            "state.eef_quaternion": np.expand_dims(self.robot.ee_quat.astype(np.float64), axis=(0, 1)),
+            "state.gripper_qpos": np.expand_dims(self.robot.gripper_qpos.astype(np.float64), axis=(0, 1)),
         }
         return vla_obs
 

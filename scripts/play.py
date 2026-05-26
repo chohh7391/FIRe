@@ -43,7 +43,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from multiprocessing import RawValue
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional
 
 import cv2
 import numpy as np
@@ -238,7 +238,6 @@ class LiveInferenceStrategy(ControlStrategy):
     def reset(self) -> dict:
         self._buffered_action = _zero_action(self._action_dim)
         obs_dict = self._robot.get_observation()
-        vla_obs_dict = self._robot.get_vla_observation()
         self._pending_obs_dict = obs_dict
         # 첫 obs로 첫 inference를 미리 트리거 -> step(0)에서 바로 action 사용
         self._trigger_inference(obs_dict)
@@ -311,6 +310,8 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
             self._vla_requested = True
 
         rl_action = self._wait_inference()                      # RL action
+        print(f"rl_action: {rl_action.shape}")
+        print(f"vla_chunk / {chunk_idx}: {self._vla_chunk.shape}")
         combined = (rl_action + self._vla_chunk[chunk_idx]).astype(np.float32)
 
         self._buffered_action = {
@@ -670,6 +671,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use_sim_time",   action="store_true")
     p.add_argument("--vla", type=str, default=None, choices=["gr00t", "pi05"])
     p.add_argument("--vla_chunk_size", type=int, default=16)
+    p.add_argument("--host", type=str, default=None, choices=["localhost", "163.180.160.225"])
+    p.add_argument("--port", type=int, default=None, choices=[5555, 5556, 5557, 5558, 5559])
 
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--raw",  action="store_true", help="Replay: CSV obs → inference")
@@ -720,10 +723,15 @@ def main() -> None:
     obs_flag    = RawValue(ctypes.c_int32, 0)
     action_flag = RawValue(ctypes.c_int32, 0)
 
-    if args.vla == "gr00t":
-        vla_policy = AsyncGr00tInferenceClient()
-    elif args.vla == "pi05":
-        vla_policy = AsyncPi05InferenceClient()
+    if args.vla is not None:
+        assert args.host is not None and args.port is not None
+        if args.vla == "gr00t":
+            vla_policy = AsyncGr00tInferenceClient(host=args.host, port=args.port)
+        elif args.vla == "pi05":
+            host = args.host
+            if args.host == "localhost":
+                host = "127.0.0.1"
+            vla_policy = AsyncPi05InferenceClient(host=host, port=args.port)
     else:
         vla_policy = None
     
