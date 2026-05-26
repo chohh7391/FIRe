@@ -189,6 +189,14 @@ class FR3Robot(Robot):
         obs_dict = self.task.get_observation()
 
         return obs_dict
+    
+    def get_vla_observation(self) -> RobotObservation:
+        if not self.is_connected:
+            raise ConnectionError(f"{self.name} is not connected.")
+        
+        obs_dict = self.task.get_vla_observation()
+
+        return obs_dict
 
     def send_action(self, action: RobotAction) -> RobotAction:
         if not self.is_connected:

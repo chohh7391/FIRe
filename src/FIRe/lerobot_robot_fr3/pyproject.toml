@@ -13,7 +13,10 @@ dependencies = [
     "numpy",
     "bota-driver",
     "scipy",
-    # "pinocchio"
+    # "pinocchio",
+    "websockets",
+    "msgpack",
+    
 ]
 
 [tool.setuptools]

@@ -37,15 +37,15 @@ class FR3RobotConfig(RobotConfig):
         default_factory=lambda: {
             "wrist": ZMQCameraConfig(
                 server_address="127.0.0.1", port=5555, camera_name="wrist", timeout_ms=5000,
-                width=640, height=480, fps=30
+                width=256, height=256, fps=30
             ),
             "left":  ZMQCameraConfig(
                 server_address="127.0.0.1", port=5555, camera_name="left", timeout_ms=5000,
-                width=640, height=480, fps=30
+                width=256, height=256, fps=30
             ),
             "right": ZMQCameraConfig(
                 server_address="127.0.0.1", port=5555, camera_name="right", timeout_ms=5000,
-                width=640, height=480, fps=30
+                width=256, height=256, fps=30
             )
         }
     )

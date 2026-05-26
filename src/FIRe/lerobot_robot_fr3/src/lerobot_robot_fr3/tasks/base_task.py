@@ -50,6 +50,10 @@ class Task(ABC):
         raise NotImplementedError
     
     @abstractmethod
+    def get_vla_observation(self) -> Dict[str, np.ndarray]:
+        raise NotImplementedError
+    
+    @abstractmethod
     def get_arm_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
         raise NotImplementedError
 
