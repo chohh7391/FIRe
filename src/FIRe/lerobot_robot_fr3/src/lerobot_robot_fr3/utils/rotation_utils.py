@@ -43,7 +43,7 @@ def get_euler_xyz(q: np.ndarray, extrinsic: bool = True) -> Tuple[float, float, 
         # roll (x-axis rotation)
         sinr_cosp = 2.0 * (q[qw] * q[qx] + q[qy] * q[qz])
         cosr_cosp = q[qw] * q[qw] - q[qx] * q[qx] - q[qy] * q[qy] + q[qz] * q[qz]
-        roll = np.atan2(sinr_cosp, cosr_cosp)
+        roll = np.arctan2(sinr_cosp, cosr_cosp)
 
         # pitch (y-axis rotation)
         sinp = 2.0 * (q[qw] * q[qy] - q[qz] * q[qx])
@@ -55,7 +55,7 @@ def get_euler_xyz(q: np.ndarray, extrinsic: bool = True) -> Tuple[float, float, 
         # yaw (z-axis rotation)
         siny_cosp = 2.0 * (q[qw] * q[qz] + q[qx] * q[qy])
         cosy_cosp = q[qw] * q[qw] + q[qx] * q[qx] - q[qy] * q[qy] - q[qz] * q[qz]
-        yaw = np.atan2(siny_cosp, cosy_cosp)
+        yaw = np.arctan2(siny_cosp, cosy_cosp)
 
         return roll % (2 * np.pi), pitch % (2 * np.pi), yaw % (2 * np.pi)
     else:
@@ -163,5 +163,5 @@ def quat_conjugate(a: np.ndarray) -> np.ndarray:
 
 def quat_apply(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     xyz = a[1:]
-    t = np.linalg.cross(xyz, b) * 2
-    return b + a[0:1] * t + np.linalg.cross(xyz, t)
+    t = np.cross(xyz, b) * 2
+    return b + a[0:1] * t + np.cross(xyz, t)
