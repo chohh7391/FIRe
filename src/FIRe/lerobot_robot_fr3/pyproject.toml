@@ -10,13 +10,13 @@ requires-python = ">=3.10"
 dependencies = [
     # ROS 2 (rclpy)는 시스템에 설치된 것을 사용하므로 여기에 적지 않습니다.
     "lerobot",
-    "numpy",
+    "numpy<2.0.0",
     "bota-driver",
     "scipy",
     # "pinocchio",
     "websockets",
     "msgpack",
-    
+    "zmq",
 ]
 
 [tool.setuptools]

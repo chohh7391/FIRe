@@ -225,7 +225,7 @@ class Forge(Factory):
         )
         target_F = quat_apply(target_T_source_quat, source_F)
         target_T = quat_apply(
-            target_T_source_quat, (source_T + np.linalg.cross(target_T_source_pos, source_F))
+            target_T_source_quat, (source_T + np.cross(target_T_source_pos, source_F))
         )
         return target_F, target_T
 
