@@ -29,10 +29,10 @@ class VLARunner:
 
     def start(self) -> None:
         if self.vla_type == "gr00t":
-            from lerobot_robot_fr3.utils.vla_client import AsyncGr00tInferenceClient
+            from runners.utils.vla_clients import AsyncGr00tInferenceClient
             self.client = AsyncGr00tInferenceClient(self.host, self.port)
         elif self.vla_type == "pi05":
-            from lerobot_robot_fr3.utils.vla_client import AsyncPi05InferenceClient
+            from runners.utils.vla_clients import AsyncPi05InferenceClient
             self.client = AsyncPi05InferenceClient(self.host, self.port)
         else:
             raise ValueError(f"Unknown VLA type: {self.vla_type}")
