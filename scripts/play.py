@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 import torch.multiprocessing as mp
 
-from lerobot_robot_fr3.utils.runner.utils import (
+from runners.utils import (
     Features, total_dim, flat_keys, flatten,
     obs_to_indexed, flat_array_to_indexed, write_obs_shm, feature_slice,
 )
@@ -106,6 +106,7 @@ def vla_inference_loop(
         try:
             vla_runner.request_action(robot.get_vla_observation())
             chunk = vla_runner.get_result()
+            print(f"vla action chunk: {chunk.shape}")
             shared_state.update_vla_chunk(chunk)
         except Exception as e:
             print(f"[WARN] VLA inference failed: {e}")
@@ -121,6 +122,7 @@ def control_loop(
     control_hz: float,
     vla_chunk_size: int,
     logger: Optional["StepLogger"],
+    episode_length: Optional[float] = None, # [추가] 제한 시간(초)
 ) -> None:
     dt = 1.0 / control_hz
 
@@ -131,10 +133,22 @@ def control_loop(
             time.sleep(0.01)
 
         print(f"[CONTROL-LOOP] Running @ {control_hz} Hz  (Ctrl+C to stop)")
+        if episode_length:
+            print(f"[CONTROL-LOOP] Auto-stop enabled after {episode_length} seconds.")
 
         step_idx = 0
+        loop_start_time = time.time() # [추가] 제어 루프가 본격적으로 시작된 시간 기록
+
         while shared_state.is_running:
             t_start = time.time()
+
+            # [추가] 경과 시간 확인 및 종료 조건
+            if episode_length is not None:
+                elapsed_time = t_start - loop_start_time
+                if elapsed_time >= episode_length:
+                    print(f"\n[INFO] Reached episode time limit ({episode_length}s). Stopping control loop.")
+                    shared_state.is_running = False
+                    break # 루프 탈출
 
             # 1. Latest obs & actions 획득 (non-blocking)
             obs_dict = shared_state.get_obs()
@@ -350,6 +364,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vla_chunk_size", type=int, default=16)
     p.add_argument("--host",           type=str, default=None)
     p.add_argument("--port",           type=int, default=None)
+    p.add_argument("--episode_length", type=float, default=30.0, 
+                   help="Maximum number of steps to run before auto-stopping.")
 
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--raw",  action="store_true", help="Replay: CSV obs → RL inference")
@@ -443,24 +459,43 @@ def main() -> None:
         t.start()
 
     try:
-        control_loop(robot, shared_state, args.control_hz, args.vla_chunk_size, logger)
+        # [변경] args.episode_length 전달
+        control_loop(robot, shared_state, args.control_hz, args.vla_chunk_size, logger, args.episode_length)
     finally:
         print("\n[INFO] Shutting down ...")
         shared_state.is_running = False
         shared_state.vla_request_event.set()  # vla loop의 blocking wait 해제
 
+        # [핵심 1] 로봇 연결 해제보다 데이터 저장을 가장 먼저!
         if logger:
-            logger.save(args.save_path)
+            try:
+                logger.save(args.save_path)
+            except Exception as e:
+                print(f"[ERROR] Failed to save log data: {e}")
 
-        rl_runner.stop()
+        # 백그라운드 스레드 및 프로세스 정리
+        try:
+            rl_runner.stop()
+        except Exception:
+            pass
+
         if vla_runner:
-            vla_runner.stop()
+            try:
+                vla_runner.stop()
+            except Exception:
+                pass
 
         for t in threads:
             t.join(timeout=1.0)
 
         cv2.destroyAllWindows()
-        robot.disconnect()
+
+        # [핵심 2] ROS 연결 해제 시 크래시 대비
+        try:
+            robot.disconnect()
+        except Exception as e:
+            print(f"[WARN] Error during robot disconnect (ROS context issue): {e}")
+            
         print("[INFO] Shutdown complete.")
 
 

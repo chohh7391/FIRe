@@ -50,7 +50,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.multiprocessing as mp
-from lerobot_robot_fr3.utils.runner.utils import (
+from runners.utils import (
     Features, total_dim, flat_keys, flatten, obs_to_indexed, flat_array_to_indexed, write_obs_shm, feature_slice,
 )
 

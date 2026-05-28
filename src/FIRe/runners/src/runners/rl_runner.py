@@ -106,6 +106,7 @@ def _run_inference_process(
         with torch.inference_mode():
             obs_t = agent.obs_to_torch(obs_shm.to(device)).to(model_device)
             act = agent.get_action(obs_t, is_deterministic=True)
+            print(f"act: {act.shape}")
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 

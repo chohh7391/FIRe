@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "Inference runners for FIRe"
 requires-python = ">=3.10"
 dependencies = [
-    "numpy<2.0.0",
+    # "numpy<2.0.0",
+    "rl-games",
     "torch"
 ]
 
