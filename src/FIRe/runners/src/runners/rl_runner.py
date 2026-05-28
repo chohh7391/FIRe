@@ -100,13 +100,13 @@ def _run_inference_process(
 
     while not stop_event.is_set():
         if obs_flag.value != 1:
+            time.sleep(0.0001)
             continue
         obs_flag.value = 0
 
         with torch.inference_mode():
             obs_t = agent.obs_to_torch(obs_shm.to(device)).to(model_device)
             act = agent.get_action(obs_t, is_deterministic=True)
-            print(f"act: {act.shape}")
             if torch.cuda.is_available():
                 torch.cuda.synchronize()
 
@@ -168,25 +168,6 @@ class RLRunner:
         """obs를 shm에 쓰고 inference trigger — non-blocking."""
         self.obs_shm[0].copy_(torch.from_numpy(obs_np))
         self.obs_flag.value = 1
-
-    def start_action_poll(self, shared_state) -> None:
-        """subprocess의 action_flag를 감시하고 새 action을 SharedState에 넣는 스레드 시작."""
-        import threading
-
-        self._poll_stop = False
-
-        def _poll():
-            action_dim = self.action_dim
-            while not self._poll_stop:
-                if self.action_flag.value == 1:
-                    self.action_flag.value = 0
-                    action = self.action_shm.numpy().flatten()[:action_dim].copy()
-                    shared_state.update_rl_action(action)
-                else:
-                    time.sleep(0.001) # 1ms 대기 (필수!)
-
-        self._poll_thread = threading.Thread(target=_poll, daemon=True)
-        self._poll_thread.start()
 
     def stop(self) -> None:
         self._poll_stop = True

@@ -693,7 +693,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
     from lerobot_robot_fr3.fr3 import FR3Robot
-    from lerobot_robot_fr3.utils.vla_client import (
+    from runners.utils.vla_clients import (
         AsyncGr00tInferenceClient, AsyncPi05InferenceClient,
     )
 
