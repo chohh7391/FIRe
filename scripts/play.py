@@ -55,11 +55,6 @@ def rl_inference_loop(
     obs_features: Features,
     shared_state: SharedState,
 ) -> None:
-    """obs가 업데이트될 때마다 subprocess에 trigger — non-blocking.
-
-    결과는 rl_runner.start_action_poll()이 생성한 poll thread가
-    SharedState.update_rl_action()으로 채워줌.
-    """
     print("[RL-LOOP] Started.")
     obs_buf = np.zeros(rl_runner.obs_dim, dtype=np.float32)
     prev_obs_id: Optional[int] = None
@@ -106,7 +101,6 @@ def vla_inference_loop(
         try:
             vla_runner.request_action(robot.get_vla_observation())
             chunk = vla_runner.get_result()
-            print(f"vla action chunk: {chunk.shape}")
             shared_state.update_vla_chunk(chunk)
         except Exception as e:
             print(f"[WARN] VLA inference failed: {e}")
@@ -118,77 +112,145 @@ def vla_inference_loop(
 
 def control_loop(
     robot,
+    rl_runner: RLRunner,
+    obs_features: Features,
     shared_state: SharedState,
     control_hz: float,
     vla_chunk_size: int,
     logger: Optional["StepLogger"],
-    episode_length: Optional[float] = None, # [추가] 제한 시간(초)
+    episode_length: Optional[float] = None,
 ) -> None:
     dt = 1.0 / control_hz
+    obs_dim = total_dim(obs_features)
+    action_dim = total_dim(robot.task.action_features)
+    obs_buf = np.zeros(obs_dim, dtype=np.float32)
+
+    # ── 통계 추적용 변수 ──────────────────────────────────────────────────────
+    _obs_skip_count = 0       # obs가 아직 없어서 skip한 횟수
+    _deadline_miss_count = 0  # sleep_t < 0 (deadline miss) 횟수
+    _step_times = []          # 최근 N step의 총 소요 시간 (ms) — 이동 평균용
+    _WINDOW = 20              # 이동 평균 윈도우 크기
+    _PRINT_EVERY = 50         # 매 N step마다 요약 출력
+    _SPIKE_THRESHOLD_MS = 50.0
 
     try:
-        # Warm-up: 첫 RL action이 준비될 때까지 대기
-        print("[CONTROL-LOOP] Waiting for first RL action ...")
-        while shared_state.is_running and not shared_state.has_first_rl_action():
-            time.sleep(0.01)
-
-        print(f"[CONTROL-LOOP] Running @ {control_hz} Hz  (Ctrl+C to stop)")
+        print(f"[CONTROL-LOOP] Running @ {control_hz} Hz  dt={dt*1000:.1f}ms  (Ctrl+C to stop)")
         if episode_length:
-            print(f"[CONTROL-LOOP] Auto-stop enabled after {episode_length} seconds.")
+            print(f"[CONTROL-LOOP] Auto-stop after {episode_length}s")
 
         step_idx = 0
-        loop_start_time = time.time() # [추가] 제어 루프가 본격적으로 시작된 시간 기록
+        loop_start_time = time.perf_counter()  # ← time.time() → perf_counter 통일
 
         while shared_state.is_running:
-            t_start = time.time()
+            t_start = time.perf_counter()  # ── 기준점
 
-            # [추가] 경과 시간 확인 및 종료 조건
+            # ── Episode 시간 체크 ────────────────────────────────────────────
             if episode_length is not None:
-                elapsed_time = t_start - loop_start_time
-                if elapsed_time >= episode_length:
-                    print(f"\n[INFO] Reached episode time limit ({episode_length}s). Stopping control loop.")
+                if t_start - loop_start_time >= episode_length:
+                    print(f"\n[INFO] Episode limit reached ({episode_length}s). Stopping.")
                     shared_state.is_running = False
-                    break # 루프 탈출
+                    break
 
-            # 1. Latest obs & actions 획득 (non-blocking)
+            # ── [1] Observation 획득 ─────────────────────────────────────────
+            t0 = time.perf_counter()
             obs_dict = shared_state.get_obs()
-            rl_action, vla_chunk = shared_state.get_actions()
-
-            if obs_dict is None or rl_action is None:
+            if obs_dict is None:
+                _obs_skip_count += 1
                 time.sleep(0.001)
                 continue
+            t_obs_ms = (time.perf_counter() - t0) * 1000
 
-            # 2. RL + VLA 합산
+            # ── [2] RL Inference (동기 대기) ──────────────────────────────────
+            t0 = time.perf_counter()
+            import torch
+            write_obs_shm(obs_dict, obs_buf, obs_features)
+            rl_runner.obs_shm[0].copy_(torch.from_numpy(obs_buf))
+            rl_runner.obs_flag.value = 1
+
+            _rl_poll_iters = 0
+            while rl_runner.action_flag.value == 0:
+                if not shared_state.is_running:
+                    break
+                time.sleep(0.0001)
+                _rl_poll_iters += 1
+            rl_runner.action_flag.value = 0
+            rl_action = rl_runner.action_shm.numpy().flatten()[:action_dim].copy()
+            t_rl_ms = (time.perf_counter() - t0) * 1000
+
+            # ── [3] VLA Action 합산 ───────────────────────────────────────────
+            t0 = time.perf_counter()
+            _, vla_chunk = shared_state.get_actions()
             combined = rl_action.copy()
             if vla_chunk is not None:
                 chunk_idx = step_idx % vla_chunk_size
                 combined += vla_chunk[chunk_idx]
-
-                # chunk 중간 시점에 다음 chunk 비동기 요청
                 if chunk_idx == vla_chunk_size // 2:
                     shared_state.vla_request_event.set()
+            t_vla_ms = (time.perf_counter() - t0) * 1000
 
             action_dict = {
                 "arm_actions":     combined,
                 "gripper_actions": np.array([-1.0], dtype=np.float32),
             }
 
-            # 3. 전송
-            processed_action = robot.send_action(action_dict)
+            # ── [4] Robot send (중복 호출 제거: 1회만) ────────────────────────
+            t0 = time.perf_counter()
+            processed_action = robot.send_action(action_dict)  # ← 1회만
+            t_send_ms = (time.perf_counter() - t0) * 1000
 
-            # 4. 로깅
+            # ── [5] Logging ────────────────────────────────────────────────────
+            t0 = time.perf_counter()
             if logger:
                 logger.record(obs_dict, combined, processed_action)
+            t_log_ms = (time.perf_counter() - t0) * 1000
 
-            # 5. Hz 유지
+            # ── [6] 타이밍 계산 및 sleep ─────────────────────────────────────
+            t_total_ms = (time.perf_counter() - t_start) * 1000
+            sleep_t = dt - (time.perf_counter() - t_start)
+
+            _step_times.append(t_total_ms)
+            if len(_step_times) > _WINDOW:
+                _step_times.pop(0)
+
+            if sleep_t < 0:
+                _deadline_miss_count += 1
+
+            # Spike 감지: 임계치 초과 시 즉시 출력
+            if t_total_ms > _SPIKE_THRESHOLD_MS:
+                print(
+                    f"[SPIKE #{step_idx}] total={t_total_ms:.1f}ms "
+                    f"| obs={t_obs_ms:.2f}ms "
+                    f"| rl_wait={t_rl_ms:.1f}ms (poll={_rl_poll_iters}iters) "
+                    f"| vla={t_vla_ms:.2f}ms "
+                    f"| send={t_send_ms:.1f}ms "
+                    f"| log={t_log_ms:.2f}ms "
+                    f"| sleep={sleep_t*1000:.1f}ms"
+                )
+
+            # 주기적 요약 출력 (N step마다)
+            if step_idx > 0 and step_idx % _PRINT_EVERY == 0:
+                avg_ms = sum(_step_times) / len(_step_times)
+                print(
+                    f"[TIMING step={step_idx}] "
+                    f"avg={avg_ms:.1f}ms "
+                    f"| deadline_miss={_deadline_miss_count} "
+                    f"| obs_skip={_obs_skip_count}"
+                )
+
             step_idx += 1
-            sleep_t = dt - (time.time() - t_start)
             if sleep_t > 0:
                 time.sleep(sleep_t)
 
     except KeyboardInterrupt:
         print("\n[INFO] Control loop stopped by user.")
         shared_state.is_running = False
+    finally:
+        print(
+            f"\n[CONTROL-LOOP SUMMARY] "
+            f"steps={step_idx} "
+            f"| deadline_miss={_deadline_miss_count} ({_deadline_miss_count/max(step_idx,1)*100:.1f}%) "
+            f"| obs_skip={_obs_skip_count}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -429,7 +491,6 @@ def main() -> None:
 
     rl_runner = RLRunner(obs_dim, action_dim, args.checkpoint, args.cfg, args.device)
     rl_runner.start()
-    rl_runner.start_action_poll(shared_state)  # action_flag → SharedState bridge
 
     vla_runner: Optional[VLARunner] = None
     if args.vla:
@@ -440,11 +501,6 @@ def main() -> None:
         threading.Thread(
             target=observation_loop,
             args=(robot, shared_state),
-            daemon=True,
-        ),
-        threading.Thread(
-            target=rl_inference_loop,
-            args=(rl_runner, obs_features, shared_state),
             daemon=True,
         ),
     ]
@@ -459,8 +515,17 @@ def main() -> None:
         t.start()
 
     try:
-        # [변경] args.episode_length 전달
-        control_loop(robot, shared_state, args.control_hz, args.vla_chunk_size, logger, args.episode_length)
+        # 변경된 파라미터로 control_loop 실행
+        control_loop(
+            robot, 
+            rl_runner, 
+            obs_features, 
+            shared_state, 
+            args.control_hz, 
+            args.vla_chunk_size, 
+            logger, 
+            args.episode_length
+        )
     finally:
         print("\n[INFO] Shutting down ...")
         shared_state.is_running = False
