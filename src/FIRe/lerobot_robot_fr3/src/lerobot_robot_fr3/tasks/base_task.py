@@ -2,6 +2,7 @@ from typing import Tuple, Dict
 import numpy as np
 from abc import ABC, abstractmethod
 from lerobot_robot_fr3.utils import RobotStateManager, CameraSensorManager, FTSensorManager
+import os, sys
 
 
 class Task(ABC):
@@ -10,7 +11,17 @@ class Task(ABC):
         self._robot: RobotStateManager = None
         self._camera_sensor: CameraSensorManager = None
         self._ft_sensor: FTSensorManager = None
-    
+
+    @property
+    def model_cfg_path(self) -> str:
+        module = sys.modules[self.__class__.__module__]
+        if hasattr(module, "__file__") and module.__file__ is not None:
+            class_dir = os.path.dirname(os.path.abspath(module.__file__))
+        else:
+            class_dir = os.path.dirname(os.path.abspath(__file__))
+            
+        return os.path.join(class_dir, "agents", f"{self.name}.yaml")
+
     @property
     def robot(self) -> RobotStateManager:
         return self._robot
@@ -22,7 +33,7 @@ class Task(ABC):
     @property
     def ft_sensor(self) -> FTSensorManager:
         return self._ft_sensor
-    
+
     def allocate_managers(
         self, 
         robot: RobotStateManager,

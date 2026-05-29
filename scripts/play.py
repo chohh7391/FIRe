@@ -54,7 +54,7 @@ from fire_core.strategies import (
     ReplayRawStrategy,
     ReplayPoseStrategy,
 )
-from fire_core.io.logger import StepLogger
+from fire_core.logger import StepLogger
 from fire_core.loop import run_control_loop
 
 
@@ -66,7 +66,6 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--task",           default="peg_insert")
     p.add_argument("--checkpoint",     required=True)
-    p.add_argument("--cfg",            required=True)
     p.add_argument("--device",         default="cuda:0")
     p.add_argument("--control_hz",     type=float, default=15.0)
     p.add_argument("--replay",         default=None, metavar="CSV")
@@ -145,7 +144,7 @@ def main() -> None:
         infer_handle = start_inference_process(
             obs_shm, action_shm, obs_flag, action_flag,
             checkpoint=args.checkpoint,
-            cfg_path=args.cfg,
+            cfg_path=robot.task.model_cfg_path,
             obs_dim=obs_dim,
             action_dim=action_dim,
             device=args.device,
