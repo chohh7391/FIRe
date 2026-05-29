@@ -1,0 +1,356 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from multiprocessing import RawValue
+from typing import List, Optional
+
+import numpy as np
+import pandas as pd
+import torch
+
+from fire_core.utils import Features, feature_slice, write_obs_shm
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Data class
+# ──────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class StepResult:
+    obs_dict: Optional[dict]
+    action_dict: dict
+    policy_action: Optional[np.ndarray] = None
+    obs_array: Optional[np.ndarray] = None
+    model_obs_array: Optional[np.ndarray] = None
+    metadata: Optional[dict] = None
+    processed_action: Optional[dict] = None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Abstract base
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ControlStrategy(ABC):
+    """Isaac Lab DirectRLEnv와 동일한 action-first 스텝 순서를 구현하는 전략."""
+
+    @abstractmethod
+    def reset(self) -> dict: ...
+
+    @abstractmethod
+    def step(self, step_idx: int) -> Optional[StepResult]: ...
+
+    def after_action_sent(self, step_idx: int, result: StepResult) -> StepResult:
+        return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _zero_action(action_dim: int) -> dict:
+    return {
+        "arm_actions":     np.zeros(action_dim, dtype=np.float32),
+        "gripper_actions": np.array([-1.0], dtype=np.float32),
+    }
+
+
+def _spin_wait_inference(action_flag: RawValue, action_shm: torch.Tensor, action_dim: int) -> np.ndarray:
+    """action_flag가 1이 될 때까지 pure spin-wait.
+
+    NOTE: time.sleep() 절대 사용 금지.
+          Linux sleep 해상도(1-4ms)로 인해 inference가 이미 완료됐어도
+          수ms 추가 대기가 붙어 제어 주기가 무너진다.
+    """
+    while action_flag.value == 0:
+        pass
+    action_flag.value = 0
+    return action_shm.numpy().flatten()[:action_dim].copy()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Live inference
+# ──────────────────────────────────────────────────────────────────────────────
+
+class LiveInferenceStrategy(ControlStrategy):
+    """실시간: action apply → obs 수집 → inference (Isaac Lab 순서)."""
+
+    def __init__(
+        self,
+        robot,
+        obs_buf: np.ndarray,
+        obs_features: Features,
+        obs_flag: RawValue,
+        action_flag: RawValue,
+        action_shm: torch.Tensor,
+        action_dim: int,
+    ):
+        self._robot = robot
+        self._obs_buf = obs_buf
+        self._obs_features = obs_features
+        self._obs_flag = obs_flag
+        self._action_flag = action_flag
+        self._action_shm = action_shm
+        self._action_dim = action_dim
+        self._buffered_action: dict = _zero_action(action_dim)
+        self._pending_obs_dict: Optional[dict] = None
+
+    def _wait_inference(self) -> np.ndarray:
+        return _spin_wait_inference(self._action_flag, self._action_shm, self._action_dim)
+
+    def _trigger_inference(self, obs_dict: dict) -> None:
+        write_obs_shm(obs_dict, self._obs_buf, self._obs_features)
+        self._obs_flag.value = 1
+
+    def reset(self) -> dict:
+        self._buffered_action = _zero_action(self._action_dim)
+        obs_dict = self._robot.get_observation()
+        self._pending_obs_dict = obs_dict
+        self._trigger_inference(obs_dict)
+        return obs_dict
+
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        arm_action = self._wait_inference()
+        self._buffered_action = {
+            "arm_actions":     arm_action,
+            "gripper_actions": np.array([-1.0], dtype=np.float32),
+        }
+        return StepResult(
+            obs_dict=self._pending_obs_dict,
+            action_dict=self._buffered_action,
+            policy_action=arm_action,
+        )
+
+    def after_action_sent(self, step_idx: int, result: StepResult) -> StepResult:
+        obs_dict = self._robot.get_observation()
+        self._pending_obs_dict = obs_dict
+        self._trigger_inference(obs_dict)
+        return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Live inference + VLA
+# ──────────────────────────────────────────────────────────────────────────────
+
+class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
+    """RL action에 VLA chunk를 합산하는 전략."""
+
+    def __init__(
+        self,
+        robot,
+        obs_buf: np.ndarray,
+        obs_features: Features,
+        obs_flag: RawValue,
+        action_flag: RawValue,
+        action_shm: torch.Tensor,
+        action_dim: int,
+        *,
+        vla_policy,
+        vla_chunk_size: int = 16,
+    ):
+        super().__init__(robot, obs_buf, obs_features,
+                         obs_flag, action_flag, action_shm, action_dim)
+        self._vla = vla_policy
+        self._chunk_size = int(vla_chunk_size)
+        self._vla_chunk: Optional[np.ndarray] = None
+        self._vla_requested = False
+
+    def _build_vla_chunk(self, raw_actions: dict) -> np.ndarray:
+        pos = np.asarray(raw_actions["action.eef_position_delta"], dtype=np.float32)
+        rot = np.asarray(raw_actions["action.eef_rotation_delta"], dtype=np.float32)
+        if pos.ndim == 3: pos = pos.squeeze(0)
+        if rot.ndim == 3: rot = rot.squeeze(0)
+        chunk = np.concatenate([pos, rot], axis=-1)
+        if chunk.shape[-1] < self._action_dim:
+            pad = np.zeros((chunk.shape[0], self._action_dim - chunk.shape[-1]), dtype=np.float32)
+            chunk = np.concatenate([chunk, pad], axis=-1)
+        return chunk
+
+    def reset(self) -> dict:
+        obs_dict = super().reset()
+        vla_obs = self._robot.get_vla_observation()
+        raw = self._vla.get_action_sync(vla_obs)
+        self._vla_chunk = self._build_vla_chunk(raw)
+        self._vla_requested = False
+        return obs_dict
+
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        chunk_idx = step_idx % self._chunk_size
+
+        if chunk_idx == 0 and step_idx != 0:
+            try:
+                self._vla_chunk = self._build_vla_chunk(self._vla.get_result())
+            except Exception as e:
+                print(f"[WARN] VLA get_result failed: {e}, reusing previous chunk.")
+            self._vla_requested = False
+
+        if chunk_idx == self._chunk_size // 2 and not self._vla_requested:
+            self._vla.request_action(self._robot.get_vla_observation())
+            self._vla_requested = True
+
+        rl_action = self._wait_inference()
+        combined = (rl_action + self._vla_chunk[chunk_idx]).astype(np.float32)
+        self._buffered_action = {
+            "arm_actions":     combined,
+            "gripper_actions": np.array([-1.0], dtype=np.float32),
+        }
+        return StepResult(
+            obs_dict=self._pending_obs_dict,
+            action_dict=self._buffered_action,
+            policy_action=combined,
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Replay — raw (CSV obs → inference)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ReplayRawStrategy(ControlStrategy):
+    """Replay --raw: CSV obs → inference → action, live robot obs로 로깅."""
+
+    def __init__(
+        self,
+        replay_data: pd.DataFrame,
+        obs_buf: np.ndarray,
+        obs_flag: RawValue,
+        action_flag: RawValue,
+        action_shm: torch.Tensor,
+        obs_dim: int,
+        action_dim: int,
+        robot=None,
+        obs_features: Optional[Features] = None,
+    ):
+        self._data = replay_data
+        self._obs_buf = obs_buf
+        self._obs_flag = obs_flag
+        self._action_flag = action_flag
+        self._action_shm = action_shm
+        self._obs_dim = obs_dim
+        self._action_dim = action_dim
+        self._buffered_action: dict = _zero_action(action_dim)
+        self._robot = robot
+        self._obs_features = obs_features
+        self._pending_obs_np: Optional[np.ndarray] = None
+
+    def _load_obs_row(self, step_idx: int) -> np.ndarray:
+        row = self._data.iloc[step_idx]
+        return row[[f"obs_{i}" for i in range(self._obs_dim)]].to_numpy(dtype=np.float32)
+
+    def _row_metadata(self, step_idx: int) -> dict:
+        row = self._data.iloc[step_idx]
+        metadata = {}
+        for col in ("episode", "step"):
+            if col in self._data.columns:
+                value = row[col]
+                metadata[col] = int(value) if float(value).is_integer() else float(value)
+        return metadata
+
+    def _trigger_inference(self, obs_np: np.ndarray) -> None:
+        self._obs_buf[:] = obs_np
+        self._obs_flag.value = 1
+
+    def _wait_inference(self) -> np.ndarray:
+        return _spin_wait_inference(self._action_flag, self._action_shm, self._action_dim)
+
+    def _sync_initial_action_from_obs(self, obs_np: np.ndarray) -> None:
+        if self._robot is None or self._obs_features is None:
+            return
+        prev_slice = feature_slice(self._obs_features, "prev_actions")
+        if prev_slice is None:
+            print("[WARN] Replay raw initial action sync skipped: prev_actions not in obs_features.")
+            return
+        task = getattr(self._robot, "task", None)
+        if task is None:
+            print("[WARN] Replay raw initial action sync skipped: robot has no task.")
+            return
+        prev_actions = obs_np[prev_slice].astype(np.float32, copy=True)
+        synced = False
+        for action_name, prev_name in (("action", "prev_action"), ("actions", "prev_actions")):
+            if not hasattr(task, action_name):
+                continue
+            action_arr = getattr(task, action_name)
+            dim = min(np.asarray(action_arr).size, prev_actions.size)
+            next_action = np.asarray(action_arr, dtype=np.float32).copy()
+            next_action.reshape(-1)[:dim] = prev_actions[:dim]
+            setattr(task, action_name, next_action.reshape(np.asarray(action_arr).shape))
+            if hasattr(task, prev_name):
+                prev_arr = getattr(task, prev_name)
+                next_prev = np.asarray(prev_arr, dtype=np.float32).copy()
+                prev_dim = min(next_prev.size, prev_actions.size)
+                next_prev.reshape(-1)[:prev_dim] = prev_actions[:prev_dim]
+                setattr(task, prev_name, next_prev.reshape(np.asarray(prev_arr).shape))
+            synced = True
+        if synced:
+            print("[INFO] Replay raw initial EMA state synced from obs_0.prev_actions.")
+        else:
+            print("[WARN] Replay raw initial action sync skipped: task has no action buffer.")
+
+    def reset(self) -> dict:
+        self._buffered_action = _zero_action(self._action_dim)
+        self._pending_obs_np = self._load_obs_row(0)
+        self._sync_initial_action_from_obs(self._pending_obs_np)
+        self._trigger_inference(self._pending_obs_np)
+        return {}
+
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        if step_idx >= len(self._data):
+            print("\n[INFO] Replay CSV finished.")
+            return None
+        arm_action = self._wait_inference()
+        self._buffered_action = {
+            "arm_actions":     arm_action,
+            "gripper_actions": np.array([-1.0], dtype=np.float32),
+        }
+        obs_dict = self._robot.get_observation() if self._robot is not None else None
+        print(f"\r[REPLAY-RAW] {step_idx + 1}/{len(self._data)}", end="")
+        return StepResult(
+            obs_dict=obs_dict,
+            action_dict=self._buffered_action,
+            policy_action=arm_action,
+            model_obs_array=self._pending_obs_np,
+            metadata=self._row_metadata(step_idx),
+        )
+
+    def after_action_sent(self, step_idx: int, result: StepResult) -> StepResult:
+        next_idx = step_idx + 1
+        if next_idx >= len(self._data):
+            return result
+        self._pending_obs_np = self._load_obs_row(next_idx)
+        self._trigger_inference(self._pending_obs_np)
+        return result
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Replay — pose (CSV target pose → direct send)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ReplayPoseStrategy(ControlStrategy):
+    """Replay --pose: CSV target pose를 직접 action으로 전송 (inference 없음)."""
+
+    def __init__(self, replay_data: pd.DataFrame, pose_cols: List[str], action_dim: int):
+        self._data = replay_data
+        self._pose_cols = pose_cols
+        self._action_dim = action_dim
+        self._buffered_action: dict = _zero_action(action_dim)
+
+    def reset(self) -> dict:
+        self._buffered_action = _zero_action(self._action_dim)
+        return {}
+
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        if step_idx >= len(self._data):
+            print("\n[INFO] Replay CSV finished.")
+            return None
+        sent_action = self._buffered_action.copy()
+        next_idx = step_idx + 1
+        if next_idx < len(self._data):
+            row = self._data.iloc[next_idx]
+            target_pose = row[self._pose_cols].to_numpy(dtype=np.float32)
+            self._buffered_action = {
+                "arm_actions":     target_pose,
+                "gripper_actions": np.array([-1.0], dtype=np.float32),
+            }
+        else:
+            self._buffered_action = _zero_action(self._action_dim)
+        print(f"\r[REPLAY-POSE] {step_idx + 1}/{len(self._data)}", end="")
+        return StepResult(obs_dict=None, action_dict=sent_action)

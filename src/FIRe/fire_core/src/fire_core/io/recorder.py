@@ -1,10 +1,3 @@
-"""LeRobot dataset recording utilities for FIRe play.py.
-
-This module intentionally keeps LeRobot-specific imports and dataset formatting
-out of the realtime runner.  The runner only has to call ``record(...)`` once
-per control step and ``save(...)`` at shutdown.
-"""
-
 from __future__ import annotations
 
 import datetime

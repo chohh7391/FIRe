@@ -1,409 +1,61 @@
 """play.py
 
-Franka FR3 inference runner.
+Franka FR3 VLA inference runner.
 
-Architecture: Fully Decoupled 3-Loop (Sense → Plan → Act)
-----------------------------------------------------------
-  Observation loop  : robot I/O를 계속 수집해 SharedState에 넣음.
-  RL inference loop : obs를 subprocess에 trigger (non-blocking).
-                      별도 poll thread가 action을 SharedState에 씀.
-  VLA inference loop: control loop의 Event를 받아 다음 chunk를 비동기 요청.
-  Control loop      : 정확한 Hz로 latest action을 꺼내 로봇에 전송.
-                      inference latency에 무관 — 절대 blocking 없음.
+Step ordering — mirrors Isaac Lab DirectRLEnv
+---------------------------------------------
+Isaac Lab:
+  reset()  →  obs_0  (zero action initialized)
+  loop:
+    action_t = policy(obs_t)     # deterministic policy output
+    pre_physics_step(action_t)   # buffer action
+    apply_action()               # send buffered action → robot/sim
+    sim.step()                   # physics
+    obs_t+1 = get_observations() # collect next obs
+
+This runner:
+  connect()  →  obs_0  (zero action initialized)
+  loop:
+    action_t = infer(obs_t)      # deterministic policy output
+    send_action(action_t)        # apply buffered action first  ← pre_physics + apply_action
+    obs_t+1 = get_observation()  # collect obs after physics    ← get_observations
+    action_t+1 = infer(obs_t+1)  # compute next action (async)  ← policy
+
+Architecture
+------------
+Main Process (A)  ←→  Inference Process (B)
+  - ROS2 / robot I/O         - rl-games agent (GPU)
+  - control loop @ N Hz      - spin-wait on obs_flag
+  - CSV logging              - writes action to shared mem
+
+Communication: shared torch tensors + RawValue spin-flags
+  obs_flag  : 0=idle  1=obs_ready
+  action_flag: 0=idle  1=action_ready  2=warmup_done
 """
 
 from __future__ import annotations
 
 import argparse
-import datetime
-import os
-import time
-import threading
+import ctypes
+from multiprocessing import RawValue
 from typing import List, Optional
 
 import cv2
 import numpy as np
 import pandas as pd
+import torch
 import torch.multiprocessing as mp
 
-from runners.utils import (
-    Features, total_dim, flat_keys, flatten,
-    obs_to_indexed, flat_array_to_indexed, write_obs_shm, feature_slice,
+from fire_core.utils import total_dim, flat_keys
+from fire_core.inference import start_inference_process
+from fire_core.strategies import (
+    LiveInferenceStrategy,
+    LiveInferenceWithVLAStrategy,
+    ReplayRawStrategy,
+    ReplayPoseStrategy,
 )
-from runners.utils import SharedState
-from runners.rl_runner import RLRunner
-from runners.vla_runner import VLARunner
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Observation loop
-# ──────────────────────────────────────────────────────────────────────────────
-
-def observation_loop(robot, shared_state: SharedState) -> None:
-    print("[OBS-LOOP] Started.")
-    while shared_state.is_running:
-        obs_dict = robot.get_observation()
-        shared_state.update_obs(obs_dict)
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# RL inference loop
-# ──────────────────────────────────────────────────────────────────────────────
-
-def rl_inference_loop(
-    rl_runner: RLRunner,
-    obs_features: Features,
-    shared_state: SharedState,
-) -> None:
-    print("[RL-LOOP] Started.")
-    obs_buf = np.zeros(rl_runner.obs_dim, dtype=np.float32)
-    prev_obs_id: Optional[int] = None
-
-    while shared_state.is_running:
-        obs_dict = shared_state.get_obs()
-        if obs_dict is None:
-            time.sleep(0.001)
-            continue
-
-        # 동일한 obs_dict 객체면 skip (새 obs가 아직 안 왔음)
-        curr_id = id(obs_dict)
-        if curr_id == prev_obs_id:
-            time.sleep(0.001)
-            continue
-        prev_obs_id = curr_id
-
-        write_obs_shm(obs_dict, obs_buf, obs_features)
-        rl_runner.trigger(obs_buf)  # non-blocking: flag 세우고 즉시 반환
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# VLA inference loop
-# ──────────────────────────────────────────────────────────────────────────────
-
-def vla_inference_loop(
-    vla_runner: VLARunner,
-    robot,
-    shared_state: SharedState,
-) -> None:
-    print("[VLA-LOOP] Started.")
-
-    # 첫 chunk 동기 수신
-    chunk = vla_runner.get_action_sync(robot.get_vla_observation())
-    shared_state.update_vla_chunk(chunk)
-
-    while shared_state.is_running:
-        # control loop가 Event를 set할 때까지 blocking (CPU 소모 없음)
-        shared_state.vla_request_event.wait()
-        if not shared_state.is_running:
-            break
-        shared_state.vla_request_event.clear()
-
-        try:
-            vla_runner.request_action(robot.get_vla_observation())
-            chunk = vla_runner.get_result()
-            shared_state.update_vla_chunk(chunk)
-        except Exception as e:
-            print(f"[WARN] VLA inference failed: {e}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Control loop
-# ──────────────────────────────────────────────────────────────────────────────
-
-def control_loop(
-    robot,
-    rl_runner: RLRunner,
-    obs_features: Features,
-    shared_state: SharedState,
-    control_hz: float,
-    vla_chunk_size: int,
-    logger: Optional["StepLogger"],
-    episode_length: Optional[float] = None,
-) -> None:
-    dt = 1.0 / control_hz
-    obs_dim = total_dim(obs_features)
-    action_dim = total_dim(robot.task.action_features)
-    obs_buf = np.zeros(obs_dim, dtype=np.float32)
-
-    # ── 통계 추적용 변수 ──────────────────────────────────────────────────────
-    _obs_skip_count = 0       # obs가 아직 없어서 skip한 횟수
-    _deadline_miss_count = 0  # sleep_t < 0 (deadline miss) 횟수
-    _step_times = []          # 최근 N step의 총 소요 시간 (ms) — 이동 평균용
-    _WINDOW = 20              # 이동 평균 윈도우 크기
-    _PRINT_EVERY = 50         # 매 N step마다 요약 출력
-    _SPIKE_THRESHOLD_MS = 50.0
-
-    try:
-        print(f"[CONTROL-LOOP] Running @ {control_hz} Hz  dt={dt*1000:.1f}ms  (Ctrl+C to stop)")
-        if episode_length:
-            print(f"[CONTROL-LOOP] Auto-stop after {episode_length}s")
-
-        step_idx = 0
-        loop_start_time = time.perf_counter()  # ← time.time() → perf_counter 통일
-
-        while shared_state.is_running:
-            t_start = time.perf_counter()  # ── 기준점
-
-            # ── Episode 시간 체크 ────────────────────────────────────────────
-            if episode_length is not None:
-                if t_start - loop_start_time >= episode_length:
-                    print(f"\n[INFO] Episode limit reached ({episode_length}s). Stopping.")
-                    shared_state.is_running = False
-                    break
-
-            # ── [1] Observation 획득 ─────────────────────────────────────────
-            t0 = time.perf_counter()
-            obs_dict = shared_state.get_obs()
-            if obs_dict is None:
-                _obs_skip_count += 1
-                time.sleep(0.001)
-                continue
-            t_obs_ms = (time.perf_counter() - t0) * 1000
-
-            # ── [2] RL Inference (동기 대기) ──────────────────────────────────
-            t0 = time.perf_counter()
-            import torch
-            write_obs_shm(obs_dict, obs_buf, obs_features)
-            rl_runner.obs_shm[0].copy_(torch.from_numpy(obs_buf))
-            rl_runner.obs_flag.value = 1
-
-            _rl_poll_iters = 0
-            while rl_runner.action_flag.value == 0:
-                if not shared_state.is_running:
-                    break
-                time.sleep(0.0001)
-                _rl_poll_iters += 1
-            rl_runner.action_flag.value = 0
-            rl_action = rl_runner.action_shm.numpy().flatten()[:action_dim].copy()
-            t_rl_ms = (time.perf_counter() - t0) * 1000
-
-            # ── [3] VLA Action 합산 ───────────────────────────────────────────
-            t0 = time.perf_counter()
-            _, vla_chunk = shared_state.get_actions()
-            combined = rl_action.copy()
-            if vla_chunk is not None:
-                chunk_idx = step_idx % vla_chunk_size
-                combined += vla_chunk[chunk_idx]
-                if chunk_idx == vla_chunk_size // 2:
-                    shared_state.vla_request_event.set()
-            t_vla_ms = (time.perf_counter() - t0) * 1000
-
-            action_dict = {
-                "arm_actions":     combined,
-                "gripper_actions": np.array([-1.0], dtype=np.float32),
-            }
-
-            # ── [4] Robot send (중복 호출 제거: 1회만) ────────────────────────
-            t0 = time.perf_counter()
-            processed_action = robot.send_action(action_dict)  # ← 1회만
-            t_send_ms = (time.perf_counter() - t0) * 1000
-
-            # ── [5] Logging ────────────────────────────────────────────────────
-            t0 = time.perf_counter()
-            if logger:
-                logger.record(obs_dict, combined, processed_action)
-            t_log_ms = (time.perf_counter() - t0) * 1000
-
-            # ── [6] 타이밍 계산 및 sleep ─────────────────────────────────────
-            t_total_ms = (time.perf_counter() - t_start) * 1000
-            sleep_t = dt - (time.perf_counter() - t_start)
-
-            _step_times.append(t_total_ms)
-            if len(_step_times) > _WINDOW:
-                _step_times.pop(0)
-
-            if sleep_t < 0:
-                _deadline_miss_count += 1
-
-            # Spike 감지: 임계치 초과 시 즉시 출력
-            if t_total_ms > _SPIKE_THRESHOLD_MS:
-                print(
-                    f"[SPIKE #{step_idx}] total={t_total_ms:.1f}ms "
-                    f"| obs={t_obs_ms:.2f}ms "
-                    f"| rl_wait={t_rl_ms:.1f}ms (poll={_rl_poll_iters}iters) "
-                    f"| vla={t_vla_ms:.2f}ms "
-                    f"| send={t_send_ms:.1f}ms "
-                    f"| log={t_log_ms:.2f}ms "
-                    f"| sleep={sleep_t*1000:.1f}ms"
-                )
-
-            # 주기적 요약 출력 (N step마다)
-            if step_idx > 0 and step_idx % _PRINT_EVERY == 0:
-                avg_ms = sum(_step_times) / len(_step_times)
-                print(
-                    f"[TIMING step={step_idx}] "
-                    f"avg={avg_ms:.1f}ms "
-                    f"| deadline_miss={_deadline_miss_count} "
-                    f"| obs_skip={_obs_skip_count}"
-                )
-
-            step_idx += 1
-            if sleep_t > 0:
-                time.sleep(sleep_t)
-
-    except KeyboardInterrupt:
-        print("\n[INFO] Control loop stopped by user.")
-        shared_state.is_running = False
-    finally:
-        print(
-            f"\n[CONTROL-LOOP SUMMARY] "
-            f"steps={step_idx} "
-            f"| deadline_miss={_deadline_miss_count} ({_deadline_miss_count/max(step_idx,1)*100:.1f}%) "
-            f"| obs_skip={_obs_skip_count}"
-        )
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Replay loop
-# ──────────────────────────────────────────────────────────────────────────────
-
-def run_replay_loop(
-    robot,
-    args: argparse.Namespace,
-    obs_dim: int,
-    action_dim: int,
-    obs_features: Features,
-    log_features: Features,
-    logger: Optional["StepLogger"],
-) -> None:
-    df = pd.read_csv(args.replay)
-    print(f"[INFO] Replaying {len(df)} steps from {args.replay}")
-
-    rl_runner: Optional[RLRunner] = None
-    if args.raw:
-        rl_runner = RLRunner(obs_dim, action_dim, args.checkpoint, args.cfg, args.device)
-        rl_runner.start()
-
-    dt = 1.0 / args.control_hz
-
-    if args.raw and len(df) > 0:
-        first_obs_np = df.iloc[0][[f"obs_{i}" for i in range(obs_dim)]].to_numpy(dtype=np.float32)
-        _sync_initial_ema(robot, first_obs_np, obs_features)
-
-    try:
-        for step_idx in range(len(df)):
-            t_start = time.time()
-            row = df.iloc[step_idx]
-
-            if args.pose:
-                pose_cols = (
-                    flat_keys({"target_pos":  log_features["target_pos"]})
-                    + flat_keys({"target_quat": log_features["target_quat"]})
-                )
-                arm_action = row[pose_cols].to_numpy(dtype=np.float32)
-                action_dict = {"arm_actions": arm_action, "gripper_actions": np.array([-1.0], dtype=np.float32)}
-                processed = robot.send_processed_action(action_dict)
-            else:
-                obs_np = row[[f"obs_{i}" for i in range(obs_dim)]].to_numpy(dtype=np.float32)
-                # replay raw는 동기 infer 사용 (단일 스레드, 순서 보장 필요)
-                rl_runner.obs_shm[0].copy_(__import__("torch").from_numpy(obs_np))
-                rl_runner.obs_flag.value = 1
-                while rl_runner.action_flag.value == 0:
-                    pass
-                rl_runner.action_flag.value = 0
-                arm_action = rl_runner.action_shm.numpy().flatten()[:action_dim].copy()
-
-                action_dict = {"arm_actions": arm_action, "gripper_actions": np.array([-1.0], dtype=np.float32)}
-                obs_dict = robot.get_observation()
-                processed = robot.send_action(action_dict)
-
-                if logger:
-                    logger.record(obs_dict, arm_action, processed)
-
-            print(f"\r[REPLAY] {step_idx + 1}/{len(df)}", end="")
-            sleep_t = dt - (time.time() - t_start)
-            if sleep_t > 0:
-                time.sleep(sleep_t)
-
-    except KeyboardInterrupt:
-        print("\n[INFO] Replay stopped by user.")
-    finally:
-        if rl_runner:
-            rl_runner.stop()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Logger
-# ──────────────────────────────────────────────────────────────────────────────
-
-class StepLogger:
-    def __init__(self, robot, obs_features: Features, log_features: Features) -> None:
-        self._robot = robot
-        self._obs_features = obs_features
-        self._log_features = log_features
-        self._buffer: List[dict] = []
-
-    def record(
-        self,
-        obs_dict: dict,
-        policy_action: np.ndarray,
-        processed_action: dict,
-    ) -> None:
-        rec: dict = {}
-        rec.update(obs_to_indexed(obs_dict, self._obs_features))
-        rec.update(flat_array_to_indexed("policy_action", policy_action))
-        rec.update(flat_array_to_indexed("normalized_action", policy_action))
-
-        task_action = getattr(self._robot.task, "action", None)
-        if task_action is not None:
-            rec.update(flat_array_to_indexed("ema_action", task_action))
-            rec.update(flat_array_to_indexed("raw_action", task_action))
-
-        proc_arm = processed_action.get("processed_arm_action")
-        proc_grip = processed_action.get("processed_gripper_action")
-        if proc_arm is not None:
-            rec.update(flat_array_to_indexed("processed_arm_action", proc_arm))
-        if proc_grip is not None:
-            rec.update(flat_array_to_indexed("processed_gripper_action", proc_grip))
-
-        rec.update(flatten(self._robot.task.get_log(), self._log_features))
-        self._buffer.append(rec)
-
-    def save(self, save_dir: str) -> None:
-        if not self._buffer:
-            print("[INFO] Logger buffer empty — nothing to save.")
-            return
-        os.makedirs(save_dir, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = os.path.join(save_dir, f"collected_data_{ts}.csv")
-        pd.DataFrame(self._buffer).to_csv(path, index=False)
-        print(f"[INFO] Saved {len(self._buffer)} steps → {path}")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# EMA sync helper
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _sync_initial_ema(robot, obs_np: np.ndarray, obs_features: Features) -> None:
-    prev_slice = feature_slice(obs_features, "prev_actions")
-    if prev_slice is None:
-        print("[WARN] EMA sync skipped: prev_actions not in obs_features.")
-        return
-
-    task = getattr(robot, "task", None)
-    if task is None:
-        return
-
-    prev_actions = obs_np[prev_slice].astype(np.float32, copy=True)
-    synced = False
-
-    for action_name, prev_name in (("action", "prev_action"), ("actions", "prev_actions")):
-        if not hasattr(task, action_name):
-            continue
-        action_arr = getattr(task, action_name)
-        npa = np.asarray(action_arr, dtype=np.float32).copy()
-        npa.reshape(-1)[:min(npa.size, prev_actions.size)] = prev_actions[:min(npa.size, prev_actions.size)]
-        setattr(task, action_name, npa.reshape(np.asarray(action_arr).shape))
-
-        if hasattr(task, prev_name):
-            prev_arr = getattr(task, prev_name)
-            npp = np.asarray(prev_arr, dtype=np.float32).copy()
-            npp.reshape(-1)[:min(npp.size, prev_actions.size)] = prev_actions[:min(npp.size, prev_actions.size)]
-            setattr(task, prev_name, npp.reshape(np.asarray(prev_arr).shape))
-        synced = True
-
-    if synced:
-        print("[INFO] EMA state synced from obs_0.prev_actions.")
+from fire_core.io.logger import StepLogger
+from fire_core.loop import run_control_loop
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -422,15 +74,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use_cameras",    action="store_true")
     p.add_argument("--use_ft_sensor",  action="store_true")
     p.add_argument("--use_sim_time",   action="store_true")
-    p.add_argument("--vla",            type=str, default=None, choices=["gr00t", "pi05"])
+    p.add_argument("--vla", type=str, default=None, choices=["gr00t", "pi05"])
     p.add_argument("--vla_chunk_size", type=int, default=16)
-    p.add_argument("--host",           type=str, default=None)
-    p.add_argument("--port",           type=int, default=None)
-    p.add_argument("--episode_length", type=float, default=30.0, 
-                   help="Maximum number of steps to run before auto-stopping.")
+    p.add_argument("--host", type=str, default=None, choices=["localhost", "163.180.160.225"])
+    p.add_argument("--port", type=int, default=None, choices=[5555, 5556, 5557, 5558, 5559])
 
     mode = p.add_mutually_exclusive_group()
-    mode.add_argument("--raw",  action="store_true", help="Replay: CSV obs → RL inference")
+    mode.add_argument("--raw",  action="store_true", help="Replay: CSV obs → inference")
     mode.add_argument("--pose", action="store_true", help="Replay: CSV target pose → direct send")
 
     args = p.parse_args()
@@ -438,8 +88,6 @@ def parse_args() -> argparse.Namespace:
         p.error("--raw / --pose requires --replay")
     if args.replay and not (args.raw or args.pose):
         p.error("--replay requires --raw or --pose")
-    if args.vla and (args.host is None or args.port is None):
-        p.error("--vla requires --host and --port")
     return args
 
 
@@ -450,9 +98,14 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
     from lerobot_robot_fr3.fr3 import FR3Robot
+    from fire_core.vla_clients import (
+        AsyncGr00tInferenceClient, AsyncPi05InferenceClient,
+    )
 
     args = parse_args()
+    needs_inference = not (args.replay and args.pose)
 
+    # ── Robot 객체 (connect 전에 task features 접근) ───────────────────────────
     config = FR3RobotConfig(
         use_sim_time=args.use_sim_time,
         is_relative=False,
@@ -464,104 +117,120 @@ def main() -> None:
 
     obs_features    = robot.task.observation_features
     log_features    = robot.task.log_features
-    obs_dim         = total_dim(obs_features)
-    action_dim      = total_dim(robot.task.action_features)
+    action_features = robot.task.action_features
+    obs_dim    = total_dim(obs_features)
+    action_dim = total_dim(action_features)
     print(f"[INFO] obs_dim={obs_dim}  action_dim={action_dim}")
 
+    # ── Shared memory ─────────────────────────────────────────────────────────
+    obs_shm    = torch.zeros(1, obs_dim).share_memory_()
+    action_shm = torch.zeros(1, action_dim).share_memory_()
+    obs_flag    = RawValue(ctypes.c_int32, 0)
+    action_flag = RawValue(ctypes.c_int32, 0)
+
+    # ── VLA client ────────────────────────────────────────────────────────────
+    if args.vla is not None:
+        assert args.host is not None and args.port is not None
+        if args.vla == "gr00t":
+            vla_policy = AsyncGr00tInferenceClient(host=args.host, port=args.port)
+        elif args.vla == "pi05":
+            host = "127.0.0.1" if args.host == "localhost" else args.host
+            vla_policy = AsyncPi05InferenceClient(host=host, port=args.port)
+    else:
+        vla_policy = None
+
+    # ── Inference process ─────────────────────────────────────────────────────
+    infer_handle = None
+    if needs_inference:
+        infer_handle = start_inference_process(
+            obs_shm, action_shm, obs_flag, action_flag,
+            checkpoint=args.checkpoint,
+            cfg_path=args.cfg,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device=args.device,
+        )
+        infer_handle.wait_ready(action_flag)
+
+    # ── Robot connect ─────────────────────────────────────────────────────────
     print("[INFO] Connecting to robot ...")
-    robot.connect()
+    try:
+        robot.connect()
+    except Exception as e:
+        print(f"[ERROR] {e}")
+        if infer_handle:
+            infer_handle.shutdown()
+        return
+
     if not robot.is_connected:
         print("[ERROR] Failed to connect.")
+        if infer_handle:
+            infer_handle.shutdown()
         return
 
+    # ── CSV 로드 & 컬럼 검증 ──────────────────────────────────────────────────
+    replay_data: Optional[pd.DataFrame] = None
+    pose_cols: List[str] = []
+
+    if args.replay:
+        replay_data = pd.read_csv(args.replay)
+        print(f"[INFO] Loaded {len(replay_data)} steps from {args.replay}")
+
+        if args.raw:
+            required = [f"obs_{i}" for i in range(obs_dim)]
+        else:
+            pose_cols = (
+                flat_keys({"target_pos":  log_features["target_pos"]})
+                + flat_keys({"target_quat": log_features["target_quat"]})
+            )
+            required = pose_cols
+
+        missing = [c for c in required if c not in replay_data.columns]
+        if missing:
+            print(f"[ERROR] CSV missing columns: {missing}")
+            if infer_handle:
+                infer_handle.shutdown()
+            robot.disconnect()
+            return
+
+    # ── Strategy 선택 ─────────────────────────────────────────────────────────
+    obs_buf = obs_shm.numpy()[0]
+
+    if args.replay and args.raw:
+        strategy = ReplayRawStrategy(
+            replay_data, obs_buf, obs_flag, action_flag,
+            action_shm, obs_dim, action_dim,
+            robot=robot, obs_features=obs_features,
+        )
+    elif args.replay and args.pose:
+        strategy = ReplayPoseStrategy(replay_data, pose_cols, action_dim)
+    elif vla_policy is not None:
+        strategy = LiveInferenceWithVLAStrategy(
+            robot, obs_buf, obs_features,
+            obs_flag, action_flag, action_shm, action_dim,
+            vla_policy=vla_policy,
+            vla_chunk_size=args.vla_chunk_size,
+        )
+    else:
+        strategy = LiveInferenceStrategy(
+            robot, obs_buf, obs_features,
+            obs_flag, action_flag, action_shm, action_dim,
+        )
+
+    # ── Logger ────────────────────────────────────────────────────────────────
     logger = StepLogger(robot, obs_features, log_features) if args.save_path else None
 
-    # ── Replay ────────────────────────────────────────────────────────────────
-    if args.replay:
-        try:
-            run_replay_loop(robot, args, obs_dim, action_dim, obs_features, log_features, logger)
-        finally:
-            if logger:
-                logger.save(args.save_path)
-            robot.disconnect()
-        return
-
-    # ── Live inference ────────────────────────────────────────────────────────
-    shared_state = SharedState()
-
-    rl_runner = RLRunner(obs_dim, action_dim, args.checkpoint, args.cfg, args.device)
-    rl_runner.start()
-
-    vla_runner: Optional[VLARunner] = None
-    if args.vla:
-        vla_runner = VLARunner(args.vla, args.host, args.port, action_dim)
-        vla_runner.start()
-
-    threads = [
-        threading.Thread(
-            target=observation_loop,
-            args=(robot, shared_state),
-            daemon=True,
-        ),
-    ]
-    if vla_runner:
-        threads.append(threading.Thread(
-            target=vla_inference_loop,
-            args=(vla_runner, robot, shared_state),
-            daemon=True,
-        ))
-
-    for t in threads:
-        t.start()
-
+    # ── Control loop ──────────────────────────────────────────────────────────
     try:
-        # 변경된 파라미터로 control_loop 실행
-        control_loop(
-            robot, 
-            rl_runner, 
-            obs_features, 
-            shared_state, 
-            args.control_hz, 
-            args.vla_chunk_size, 
-            logger, 
-            args.episode_length
-        )
+        run_control_loop(robot, strategy, control_hz=args.control_hz, logger=logger)
     finally:
-        print("\n[INFO] Shutting down ...")
-        shared_state.is_running = False
-        shared_state.vla_request_event.set()  # vla loop의 blocking wait 해제
-
-        # [핵심 1] 로봇 연결 해제보다 데이터 저장을 가장 먼저!
         if logger:
-            try:
-                logger.save(args.save_path)
-            except Exception as e:
-                print(f"[ERROR] Failed to save log data: {e}")
-
-        # 백그라운드 스레드 및 프로세스 정리
-        try:
-            rl_runner.stop()
-        except Exception:
-            pass
-
-        if vla_runner:
-            try:
-                vla_runner.stop()
-            except Exception:
-                pass
-
-        for t in threads:
-            t.join(timeout=1.0)
-
+            logger.save(args.save_path)
+        if infer_handle:
+            infer_handle.shutdown()
         cv2.destroyAllWindows()
-
-        # [핵심 2] ROS 연결 해제 시 크래시 대비
-        try:
-            robot.disconnect()
-        except Exception as e:
-            print(f"[WARN] Error during robot disconnect (ROS context issue): {e}")
-            
-        print("[INFO] Shutdown complete.")
+        robot.disconnect()
+        print("[INFO] Robot disconnected.")
 
 
 if __name__ == "__main__":

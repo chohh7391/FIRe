@@ -1,22 +1,8 @@
-"""runners/rl_runner.py
-
-RLRunner
---------
-subprocess에서 inference를 돌리되, infer()는 non-blocking.
-
-구조:
-  - obs를 obs_shm에 쓰고 obs_flag를 세우면 subprocess가 알아서 action 계산.
-  - 별도 _action_poll_thread가 action_flag를 감시해서
-    새 action이 오면 SharedState.update_rl_action()으로 넣어줌.
-  - rl_inference_loop는 obs가 생길 때마다 trigger만 하고 blocking하지 않음.
-"""
-
 from __future__ import annotations
 
-import ctypes
 import time
+from dataclasses import dataclass
 from multiprocessing import RawValue
-from typing import Optional
 
 import numpy as np
 import torch
@@ -24,16 +10,18 @@ import torch.multiprocessing as mp
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Subprocess
+# Subprocess helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _build_dummy_env(obs_dim: int, action_dim: int, device: torch.device, clip_actions: float):
+    """rl-games가 요구하는 최소 env 인터페이스."""
+
     class _DummyEnv:
         observation_space = type("S", (), {"shape": (obs_dim,)})()
         action_space = type("S", (), {
             "shape": (action_dim,),
-            "high": np.full(action_dim, clip_actions, dtype=np.float32),
-            "low":  np.full(action_dim, -clip_actions, dtype=np.float32),
+            "high":  np.full(action_dim, clip_actions, dtype=np.float32),
+            "low":   np.full(action_dim, -clip_actions, dtype=np.float32),
         })()
         num_envs = 1
 
@@ -43,14 +31,19 @@ def _build_dummy_env(obs_dim: int, action_dim: int, device: torch.device, clip_a
         def step(self, _):
             return (torch.zeros(1, obs_dim, device=device),
                     torch.zeros(1), torch.zeros(1, dtype=torch.bool), {})
+
     return _DummyEnv()
 
 
-def _run_inference_process(
+# ──────────────────────────────────────────────────────────────────────────────
+# Inference process entry point
+# ──────────────────────────────────────────────────────────────────────────────
+
+def run_inference_process(
     obs_shm: torch.Tensor,
     action_shm: torch.Tensor,
-    obs_flag: RawValue,    # 0=idle  1=obs_ready
-    action_flag: RawValue, # 0=idle  1=action_ready  2=warmup_done
+    obs_flag: RawValue,
+    action_flag: RawValue,
     stop_event: mp.Event,
     *,
     checkpoint: str,
@@ -59,6 +52,11 @@ def _run_inference_process(
     action_dim: int,
     device_str: str,
 ) -> None:
+    """Inference-only subprocess: ROS 없음, GIL 경합 없음.
+
+    obs_flag 대기는 pure spin-wait(continue). time.sleep() 사용 시
+    Linux 타이머 해상도(1-4ms)만큼 불필요한 대기가 붙는다.
+    """
     import yaml
     from rl_games.common import env_configurations, vecenv
     from rl_games.torch_runner import Runner
@@ -69,7 +67,9 @@ def _run_inference_process(
         cfg = yaml.safe_load(f)
     cfg["params"].update({"load_checkpoint": True, "load_path": checkpoint})
     cfg["params"]["config"].update({
-        "device": str(device), "device_name": str(device), "num_actors": 1,
+        "device": str(device),
+        "device_name": str(device),
+        "num_actors": 1,
     })
 
     clip_actions = float(cfg["params"]["env"].get("clip_actions", 1.0))
@@ -95,13 +95,13 @@ def _run_inference_process(
 
     model_device = next(agent.model.parameters()).device
 
-    print("[RL-PROC] Ready.")
-    action_flag.value = 2  # warmup done
+    print("[INFER] Ready.")
+    action_flag.value = 2  # warm-up done 시그널
 
+    # ── Inference loop (spin-wait) ────────────────────────────────────────────
     while not stop_event.is_set():
         if obs_flag.value != 1:
-            time.sleep(0.0001)
-            continue
+            continue  # ← pure spin: sleep 금지
         obs_flag.value = 0
 
         with torch.inference_mode():
@@ -113,63 +113,54 @@ def _run_inference_process(
         action_shm.copy_(act.cpu())
         action_flag.value = 1
 
-    print("[RL-PROC] Stopped.")
+    print("[INFER] Stopped.")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Public class
+# Handle
 # ──────────────────────────────────────────────────────────────────────────────
 
-class RLRunner:
-    """RL inference subprocess를 관리.
+@dataclass
+class InferenceProcessHandle:
+    proc: mp.Process
+    stop_event: mp.Event
 
-    rl_inference_loop에서 trigger(obs_np)를 호출하면 obs_flag를 세우고
-    즉시 반환(non-blocking). 별도 _action_poll_thread가 새 action을
-    감지하면 shared_state.update_rl_action()으로 전달.
-    """
-
-    def __init__(
-        self,
-        obs_dim: int,
-        action_dim: int,
-        checkpoint: str,
-        cfg_path: str,
-        device: str = "cuda:0",
-    ) -> None:
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-
-        self.obs_shm    = torch.zeros(1, obs_dim).share_memory_()
-        self.action_shm = torch.zeros(1, action_dim).share_memory_()
-        self.obs_flag    = RawValue(ctypes.c_int32, 0)
-        self.action_flag = RawValue(ctypes.c_int32, 0)
-
-        self._stop_event = mp.Event()
-        self._proc = mp.Process(
-            target=_run_inference_process,
-            args=(self.obs_shm, self.action_shm,
-                  self.obs_flag, self.action_flag, self._stop_event),
-            kwargs=dict(checkpoint=checkpoint, cfg_path=cfg_path,
-                        obs_dim=obs_dim, action_dim=action_dim, device_str=device),
-            daemon=True,
-        )
-        self._poll_thread: Optional[object] = None
-        self._poll_stop = False
-
-    def start(self) -> None:
-        self._proc.start()
-        print("[RLRunner] Waiting for warm-up ...")
-        while self.action_flag.value != 2:
+    def wait_ready(self, action_flag: RawValue) -> None:
+        print("[INFO] Waiting for inference warm-up ...")
+        while action_flag.value != 2:
             time.sleep(0.05)
-        self.action_flag.value = 0
-        print("[RLRunner] Ready.")
+        action_flag.value = 0
+        print("[INFO] Inference process ready.")
 
-    def trigger(self, obs_np: np.ndarray) -> None:
-        """obs를 shm에 쓰고 inference trigger — non-blocking."""
-        self.obs_shm[0].copy_(torch.from_numpy(obs_np))
-        self.obs_flag.value = 1
+    def shutdown(self) -> None:
+        self.stop_event.set()
+        self.proc.join(timeout=3)
 
-    def stop(self) -> None:
-        self._poll_stop = True
-        self._stop_event.set()
-        self._proc.join(timeout=3)
+
+def start_inference_process(
+    obs_shm: torch.Tensor,
+    action_shm: torch.Tensor,
+    obs_flag: RawValue,
+    action_flag: RawValue,
+    *,
+    checkpoint: str,
+    cfg_path: str,
+    obs_dim: int,
+    action_dim: int,
+    device: str,
+) -> InferenceProcessHandle:
+    stop_event = mp.Event()
+    proc = mp.Process(
+        target=run_inference_process,
+        args=(obs_shm, action_shm, obs_flag, action_flag, stop_event),
+        kwargs=dict(
+            checkpoint=checkpoint,
+            cfg_path=cfg_path,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            device_str=device,
+        ),
+        daemon=True,
+    )
+    proc.start()
+    return InferenceProcessHandle(proc=proc, stop_event=stop_event)
