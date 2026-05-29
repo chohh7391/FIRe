@@ -24,3 +24,7 @@ def create_task(task_name: str) -> Task:
     #     return MyTask(name="my_task")
     else:
         raise ValueError(f"Unknown task name: {task_name}")
+    
+def get_model_cfg_path(task_name: str) -> str:
+    task = create_task(task_name)
+    return task.model_cfg_path

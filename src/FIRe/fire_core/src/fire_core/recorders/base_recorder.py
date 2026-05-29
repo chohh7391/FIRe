@@ -1,0 +1,230 @@
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+import datetime
+import shutil
+from pathlib import Path
+from typing import Any
+import numpy as np
+
+from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from .utils import (
+    flat_feature_names, total_dim, flatten_feature_values, squeeze_image,
+)
+
+
+TASK_REGISTRY = {
+    "forge-peg_insert": {
+        "task_index": 0,
+        "task": "Insert peg into the socket",
+    },
+    "peg_insert": {
+        "task_index": 0,
+        "task": "Insert peg into the socket",
+    },
+}
+
+VALID_TASK = {"task_index": 1, "task": "valid"}
+
+
+def _camera_shapes(robot) -> dict[str, tuple[int, int, int]]:
+    if getattr(robot, "camera_sensor_manager", None) is not None:
+        return dict(robot.camera_sensor_manager.shapes)
+    return {
+        name: (cfg.height, cfg.width, 3)
+        for name, cfg in getattr(robot.config, "cameras", {}).items()
+    }
+
+
+class BaseRecorder(ABC):
+    """공통 LeRobot 데이터셋 기록을 담당하는 기본 레코더 클래스입니다."""
+
+    def __init__(
+        self,
+        robot,
+        repo_id: str,
+        task: str,
+        fps: int,
+        root: str | Path | None = None,
+        task_text: str | None = None,
+        use_videos: bool = True,
+        image_writer_processes: int = 0,
+        image_writer_threads_per_camera: int = 4,
+        vcodec: str = "h264",
+        streaming_encoding: bool = False,
+        encoder_threads: int | None = None,
+    ) -> None:
+        self._robot = robot
+        self._task_key = task
+        self._task_info = self._resolve_task_info(task, task_text)
+        self._task = self._task_info["task"]
+        self._fps = fps
+        self._frames = 0
+        self._closed = False
+        self._use_videos = use_videos
+
+        self._image_writer_processes = image_writer_processes
+        self._image_writer_threads_per_camera = image_writer_threads_per_camera
+        self._vcodec = vcodec
+        self._streaming_encoding = streaming_encoding
+        self._encoder_threads = encoder_threads
+        
+        # 설정 변수 저장 (자식 클래스에서 접근 가능하도록)
+        self.camera_shapes = _camera_shapes(robot)
+        self._image_dtype = "video" if use_videos else "image"
+        
+        self._obs_features = robot.task.observation_features
+        self._action_features = robot.task.action_features
+        self._log_features = robot.task.log_features
+        self._rl_state_names = flat_feature_names("", self._obs_features)
+        self._log_state_names = flat_feature_names("log_", self._log_features)
+        
+        # VLA 공통 상태 이름 (모델별로 다를 경우 하위 클래스에서 오버라이드)
+        self._vla_state_names = [
+            "eef_position_0", "eef_position_1", "eef_position_2",
+            "eef_quaternion_0", "eef_quaternion_1", "eef_quaternion_2", "eef_quaternion_3",
+            "gripper_qpos_0", "gripper_qpos_1",
+        ]
+
+        self._vla_dataset = self._create_dataset(
+            repo_id=repo_id,
+            root=self._resolve_root(root, repo_id),
+            features=self._build_vla_dataset_features(),
+        )
+
+    # ── [공통 헬퍼 메서드들: _resolve_root, _create_dataset 등 기존과 동일] ──
+    def _resolve_root(self, root: str | Path | None, repo_id: str = "") -> Path | None:
+        if root is None:
+            return None
+
+        base_path = Path(root)
+        
+        # 최상위 경로(datasets) 아래에 repo_id 이름(예: chohh7391_gr00t_peg_insert)으로 하위 폴더 지정
+        if repo_id:
+            safe_repo_name = repo_id.replace("/", "_")
+            path = base_path / safe_repo_name
+        else:
+            path = base_path
+
+        # 지정된 하위 폴더가 없으면 그대로 사용
+        if not path.exists():
+            return path
+
+        # 지정된 하위 폴더가 이미 있다면 타임스탬프를 붙임 (최상위 datasets 폴더는 건드리지 않음)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        candidate = path.with_name(f"{path.name}_{timestamp}")
+        suffix = 1
+        while candidate.exists():
+            candidate = path.with_name(f"{path.name}_{timestamp}_{suffix}")
+            suffix += 1
+            
+        print(f"[INFO] Dataset path already exists, using new root: {candidate}")
+        return candidate
+    
+    def _resolve_task_info(self, task_key: str, task_text: str | None) -> dict[str, Any]:
+        info = dict(TASK_REGISTRY.get(task_key, {"task_index": 0, "task": task_key}))
+        if task_text is not None:
+            info["task"] = task_text
+        return info
+
+    def _create_dataset(
+        self,
+        repo_id: str,
+        root: str | Path | None,
+        features: dict[str, dict],
+    ) -> LeRobotDataset:
+        return LeRobotDataset.create(
+            repo_id=repo_id,
+            fps=self._fps,
+            root=root,
+            robot_type=self._robot.name,
+            features=features,
+            use_videos=self._use_videos,
+            image_writer_processes=self._image_writer_processes,
+            image_writer_threads=self._image_writer_threads_per_camera * len(self.camera_shapes),
+            vcodec=self._vcodec,
+            streaming_encoding=self._streaming_encoding,
+            encoder_threads=self._encoder_threads,
+        )
+
+    def _image_features(self, use_view_suffix: bool) -> dict[str, dict]:
+        features: dict[str, dict] = {}
+        for name, shape in self.camera_shapes.items():
+            feature_name = f"{name}_view" if use_view_suffix else name
+            features[f"observation.images.{feature_name}"] = {
+                "dtype": self._image_dtype,
+                "shape": shape,
+                "names": ["height", "width", "channels"],
+            }
+        return features
+    
+    @abstractmethod
+    def _build_vla_dataset_features(self) -> dict[str, dict]:
+        raise NotImplementedError
+
+    def _vla_state(self, vla_obs: dict[str, Any]) -> np.ndarray:
+        parts = [
+            np.asarray(vla_obs["state.eef_position"], dtype=np.float32).reshape(-1)[:3],
+            np.asarray(vla_obs["state.eef_quaternion"], dtype=np.float32).reshape(-1)[:4],
+            np.asarray(vla_obs["state.gripper_qpos"], dtype=np.float32).reshape(-1)[:2],
+        ]
+        return np.concatenate(parts).astype(np.float32, copy=False)
+    
+    @abstractmethod
+    def _format_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+    def record(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> None:
+        vla_obs = self._robot.get_vla_observation()
+
+        vla_image_frame = {
+            f"observation.images.{name}_view": squeeze_image(
+                vla_obs[f"video.{name}_view"],
+                shape,
+            )
+            for name, shape in self.camera_shapes.items()
+        }
+        vla_frame: dict[str, Any] = {
+            "observation.state": self._vla_state(vla_obs),
+            "action": self._format_action(arm_action, gripper_action),
+            "task": self._task,
+        }
+        vla_frame.update(vla_image_frame)
+
+        self._vla_dataset.add_frame(vla_frame)
+        self._frames += 1
+
+    def _ask_episode_success(self) -> bool:
+        while True:
+            value = input("[INPUT] Episode success? 0 = fail, 1 = success: ").strip()
+            if value in {"0", "1"}:
+                return value == "1"
+            print("[WARN] Please enter 0 or 1.")
+    
+    def _remove_images_dir(self, root: str | Path) -> None:
+        images_dir = Path(root) / "images"
+        if images_dir.exists():
+            shutil.rmtree(images_dir)
+
+    @abstractmethod
+    def _post_save_processing(self, success: bool) -> None:
+        raise NotImplementedError
+
+    def save(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+
+        if self._frames == 0:
+            print("[INFO] Recorder buffer empty - nothing to save.")
+            self._vla_dataset.finalize()
+            return
+
+        success = self._ask_episode_success()
+        self._vla_dataset.save_episode()
+        self._vla_dataset.finalize()
+        
+        # 모델별 후처리 로직 실행
+        self._post_save_processing(success)
+        
+        print(f"[INFO] Saved {self._frames} VLA frames to dataset: {self._vla_dataset.root}")
