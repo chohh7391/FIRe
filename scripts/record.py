@@ -3,14 +3,13 @@ from __future__ import annotations
 import argparse
 import ctypes
 from multiprocessing import RawValue
-from typing import List, Optional
+from typing import Any
 
 import cv2
-import numpy as np
-import pandas as pd
 import torch
 import torch.multiprocessing as mp
 
+from fire_core.checkpoints import resolve_checkpoint_path
 from fire_core.utils import total_dim
 from fire_core.inference import start_inference_process
 from fire_core.strategies import LiveInferenceStrategy
@@ -24,19 +23,29 @@ from fire_core.loop import run_control_loop
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--task",           default="forge-peg_insert")
-    p.add_argument("--checkpoint",     required=True)
+    checkpoint_group = p.add_mutually_exclusive_group(required=True)
+    checkpoint_group.add_argument("--checkpoint", help="Local checkpoint path.")
+    checkpoint_group.add_argument(
+        "--hf_checkpoint",
+        help="Hugging Face checkpoint path, e.g. user/repo or user/repo/path/to/model.pth.",
+    )
     p.add_argument("--device",         default="cuda:0")
     p.add_argument("--control_hz",     type=float, default=15.0)
     p.add_argument("--use_cameras",    action="store_true")
     p.add_argument("--use_ft_sensor",  action="store_true")
     p.add_argument("--use_sim_time",   action="store_true")
     p.add_argument("--vla", type=str, default=None, choices=["gr00t", "pi05"])
-    p.add_argument("--episode_length", type=int, default=300)
-    p.add_argument("--lerobot_repo_id", default=None, help="Enable LeRobot recording with this repo id.")
+    p.add_argument("--episode_length", type=int, default=88)
+    p.add_argument("--lerobot_repo_id", default=None, help="Optional HF repo id for metadata.")
     p.add_argument("--lerobot_root",    default=None, help="Local root directory for the LeRobot dataset.")
     p.add_argument("--lerobot_task",    default=None, help="Natural-language task saved in the dataset.")
+    p.add_argument("--resume",          action="store_true", help="Append a new episode to an existing dataset root.")
 
     args = p.parse_args()
+    if args.vla is None:
+        p.error("scripts/record.py requires a recording backend via --vla")
+    if args.resume and args.vla != "gr00t":
+        p.error("--resume is currently implemented for --vla gr00t only")
     return args
 
 
@@ -49,6 +58,10 @@ def main() -> None:
     from lerobot_robot_fr3.fr3 import FR3Robot
 
     args = parse_args()
+    checkpoint_path = resolve_checkpoint_path(
+        checkpoint=args.checkpoint,
+        hf_checkpoint=args.hf_checkpoint,
+    )
 
     # ── Robot 객체 (connect 전에 task features 접근) ───────────────────────────
     config = FR3RobotConfig(
@@ -67,6 +80,12 @@ def main() -> None:
     action_dim = total_dim(action_features)
     print(f"[INFO] obs_dim={obs_dim}  action_dim={action_dim}")
 
+    if args.vla == "gr00t" and not args.use_cameras:
+        print(
+            "[WARN] Recording GR00T dataset without --use_cameras. "
+            "The dataset will contain zero-filled fallback images."
+        )
+
     # ── Shared memory ─────────────────────────────────────────────────────────
     obs_shm    = torch.zeros(1, obs_dim).share_memory_()
     action_shm = torch.zeros(1, action_dim).share_memory_()
@@ -74,7 +93,7 @@ def main() -> None:
     action_flag = RawValue(ctypes.c_int32, 0)
 
     # ── VLA client ────────────────────────────────────────────────────────────
-    recorder = None
+    recorder: Any | None = None
     if args.vla == "gr00t":
         from fire_core.recorders import GR00TRecorder
         recorder = GR00TRecorder(
@@ -84,6 +103,7 @@ def main() -> None:
             task=args.task,
             task_text=args.lerobot_task,
             fps=int(round(args.control_hz)),
+            resume=args.resume,
         )
     elif args.vla == "pi05":
         from fire_core.recorders import PI05Recorder
@@ -99,7 +119,7 @@ def main() -> None:
     # ── Inference process ─────────────────────────────────────────────────────
     infer_handle = start_inference_process(
         obs_shm, action_shm, obs_flag, action_flag,
-        checkpoint=args.checkpoint,
+        checkpoint=checkpoint_path,
         cfg_path=robot.task.model_cfg_path,
         obs_dim=obs_dim,
         action_dim=action_dim,
@@ -134,13 +154,15 @@ def main() -> None:
     try:
         run_control_loop(robot, strategy, control_hz=args.control_hz, max_steps=args.episode_length, recorder=recorder)
     finally:
-        if recorder:
-            recorder.save()
-        if infer_handle:
-            infer_handle.shutdown()
-        cv2.destroyAllWindows()
-        robot.disconnect()
-        print("[INFO] Robot disconnected.")
+        try:
+            if recorder:
+                recorder.save()
+        finally:
+            if infer_handle:
+                infer_handle.shutdown()
+            cv2.destroyAllWindows()
+            robot.disconnect()
+            print("[INFO] Robot disconnected.")
 
 
 if __name__ == "__main__":

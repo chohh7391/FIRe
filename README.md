@@ -44,23 +44,63 @@ python scripts/play.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --cfg <
 - plot data
 python scripts/plot_data.py --task <TASK_NAME> --sim <ISAACLAB_DATA> --real <COLLECTED_DATA> --save_path <FIG_SAVE_PATH>
 
-
-- for specific task
+- recorde data
 ```bash
-# bringup robot
+python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla <VLA_NAME> --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>"
+```
+
+
+# TEMPORARY COMMANDS
+- bringup robot
+```bash
 source ~/ros2_ws/install/setup.bash
-ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py vla:=true control_mode:=torque
+ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py control_mode:=torque vla:=true 
+```
 
-# run vision server
+- run vision server
+```bash
 conda activate sam3
-# change target_object for your need
-python scripts/run_vision_server.py --use_sam3 --target_object wristwatch
+python scripts/run_vision_server.py
+```
 
-# run task manager for specific task
+- run task manager
+```bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch cho_task_manager run_task_manager.launch.py task:=forge
+```
 
-# run model when VLACompletionWaiterBehavior is running
+- play
 ```bash
-python scripts/play.py --task forge-peg_insert --checkpoint /home/home/FIRe/checkpoints/Forge/peg_insert/nn/Forge.pth --cfg /home/home/FIRe/src/FIRe/lerobot_robot_fr3/src/lerobot_robot_fr3/tasks/forge/agents/forge-peg_insert.yaml --replay /home/home/FIRe/logs/forge/csv/sim/origin.csv --raw --save_path /home/home/FIRe/logs/forge/csv/real
+python scripts/play.py \
+--task forge-peg_insert \
+--checkpoint /home/home/FIRe/checkpoints/Forge/VLA_RL-BL-forge-peg_insert/nn/Forge.pth
+```
+
+- record (local checkpoint)
+```bash
+python scripts/record.py \
+--task forge-peg_insert \
+--checkpoint /home/home/FIRe/checkpoints/Forge/VLA_RL-BL-forge-peg_insert/nn/Forge.pth \
+--vla gr00t \
+--lerobot_root /home/home/FIRe/test_data \
+--lerobot_task "Insert peg into the socket" \
+# --resume
+```
+
+- record (huggingface checkpoint)
+```bash
+python scripts/record.py \
+--task forge-peg_insert \
+--hf_checkpoint bhe1004/VLA_RL-BL-forge-peg_insert/nn/Forge.pth \
+--vla gr00t \
+--lerobot_root /home/home/FIRe/test_data \
+--lerobot_task "Insert peg into the socket" \
+# --resume
+```
+
+- upload dataset to hugging face
+```bash
+python scripts/push_to_hub.py \
+--root test_data \
+--repo_id chohh7391/test_datasets
 ```

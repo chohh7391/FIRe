@@ -9,7 +9,7 @@ import numpy as np
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from .utils import (
-    flat_feature_names, total_dim, flatten_feature_values, squeeze_image,
+    flat_feature_names, squeeze_image,
 )
 
 
@@ -42,11 +42,12 @@ class BaseRecorder(ABC):
     def __init__(
         self,
         robot,
-        repo_id: str,
         task: str,
         fps: int,
+        repo_id: str | None = None,
         root: str | Path | None = None,
         task_text: str | None = None,
+        resume: bool = False,
         use_videos: bool = True,
         image_writer_processes: int = 0,
         image_writer_threads_per_camera: int = 4,
@@ -61,6 +62,7 @@ class BaseRecorder(ABC):
         self._fps = fps
         self._frames = 0
         self._closed = False
+        self._resume = resume
         self._use_videos = use_videos
 
         self._image_writer_processes = image_writer_processes
@@ -86,40 +88,46 @@ class BaseRecorder(ABC):
             "gripper_qpos_0", "gripper_qpos_1",
         ]
 
+        self._dataset_root = self._resolve_root(root, repo_id, resume)
+        # 만약 repo_id가 없으면 폴더 이름을 repo_id로 사용 (LeRobotDataset 필수 인자 대응)
+        self._repo_id = repo_id or self._dataset_root.name
+        self._recording_root = self._resolve_recording_root(self._dataset_root, resume)
+
         self._vla_dataset = self._create_dataset(
-            repo_id=repo_id,
-            root=self._resolve_root(root, repo_id),
+            repo_id=self._repo_id,
+            root=self._recording_root,
             features=self._build_vla_dataset_features(),
         )
 
     # ── [공통 헬퍼 메서드들: _resolve_root, _create_dataset 등 기존과 동일] ──
-    def _resolve_root(self, root: str | Path | None, repo_id: str = "") -> Path | None:
-        if root is None:
-            return None
-
-        base_path = Path(root)
-        
-        # 최상위 경로(datasets) 아래에 repo_id 이름(예: chohh7391_gr00t_peg_insert)으로 하위 폴더 지정
-        if repo_id:
+    def _resolve_root(self, root: str | Path | None, repo_id: str | None = None, resume: bool = False) -> Path:
+        if root is not None:
+            path = Path(root)
+        elif repo_id:
             safe_repo_name = repo_id.replace("/", "_")
-            path = base_path / safe_repo_name
+            path = Path("outputs/datasets") / safe_repo_name
         else:
-            path = base_path
+            # 둘 다 없으면 기본 날짜 폴더 사용
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = Path("outputs/datasets") / f"dataset_{timestamp}"
 
-        # 지정된 하위 폴더가 없으면 그대로 사용
-        if not path.exists():
+        if resume:
             return path
 
-        # 지정된 하위 폴더가 이미 있다면 타임스탬프를 붙임 (최상위 datasets 폴더는 건드리지 않음)
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        candidate = path.with_name(f"{path.name}_{timestamp}")
-        suffix = 1
-        while candidate.exists():
-            candidate = path.with_name(f"{path.name}_{timestamp}_{suffix}")
-            suffix += 1
-            
-        print(f"[INFO] Dataset path already exists, using new root: {candidate}")
-        return candidate
+        if path.exists():
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            candidate = path.with_name(f"{path.name}_{timestamp}")
+            suffix = 1
+            while candidate.exists():
+                candidate = path.with_name(f"{path.name}_{timestamp}_{suffix}")
+                suffix += 1
+            print(f"[INFO] Dataset path '{path}' already exists, using new root: {candidate}")
+            return candidate
+
+        return path
+
+    def _resolve_recording_root(self, dataset_root: Path, resume: bool) -> Path:
+        return dataset_root
     
     def _resolve_task_info(self, task_key: str, task_text: str | None) -> dict[str, Any]:
         info = dict(TASK_REGISTRY.get(task_key, {"task_index": 0, "task": task_key}))
