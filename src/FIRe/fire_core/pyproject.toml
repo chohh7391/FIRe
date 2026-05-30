@@ -9,6 +9,7 @@ description = "Core for FIRe"
 requires-python = ">=3.10"
 dependencies = [
     # "numpy<2.0.0",
+    "huggingface-hub",
     "rl-games",
     "torch"
 ]

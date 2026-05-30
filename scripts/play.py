@@ -46,6 +46,7 @@ import pandas as pd
 import torch
 import torch.multiprocessing as mp
 
+from fire_core.checkpoints import resolve_checkpoint_path
 from fire_core.utils import total_dim, flat_keys
 from fire_core.inference import start_inference_process
 from fire_core.strategies import (
@@ -65,9 +66,15 @@ from fire_core.loop import run_control_loop
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--task",           default="peg_insert")
-    p.add_argument("--checkpoint",     required=True)
+    checkpoint_group = p.add_mutually_exclusive_group(required=True)
+    checkpoint_group.add_argument("--checkpoint", help="Local checkpoint path.")
+    checkpoint_group.add_argument(
+        "--hf_checkpoint",
+        help="Hugging Face checkpoint path, e.g. user/repo or user/repo/path/to/model.pth.",
+    )
     p.add_argument("--device",         default="cuda:0")
     p.add_argument("--control_hz",     type=float, default=15.0)
+    p.add_argument("--episode_length", type=int, default=88, help="Max steps per episode (for logging only)")
     p.add_argument("--replay",         default=None, metavar="CSV")
     p.add_argument("--save_path",      default=None)
     p.add_argument("--use_cameras",    action="store_true")
@@ -102,6 +109,10 @@ def main() -> None:
     )
 
     args = parse_args()
+    checkpoint_path = resolve_checkpoint_path(
+        checkpoint=args.checkpoint,
+        hf_checkpoint=args.hf_checkpoint,
+    )
     needs_inference = not (args.replay and args.pose)
 
     # ── Robot 객체 (connect 전에 task features 접근) ───────────────────────────
@@ -143,7 +154,7 @@ def main() -> None:
     if needs_inference:
         infer_handle = start_inference_process(
             obs_shm, action_shm, obs_flag, action_flag,
-            checkpoint=args.checkpoint,
+            checkpoint=checkpoint_path,
             cfg_path=robot.task.model_cfg_path,
             obs_dim=obs_dim,
             action_dim=action_dim,
@@ -221,7 +232,7 @@ def main() -> None:
 
     # ── Control loop ──────────────────────────────────────────────────────────
     try:
-        run_control_loop(robot, strategy, control_hz=args.control_hz, logger=logger)
+        run_control_loop(robot, strategy, control_hz=args.control_hz, max_steps=args.episode_length, logger=logger)
     finally:
         if logger:
             logger.save(args.save_path)
