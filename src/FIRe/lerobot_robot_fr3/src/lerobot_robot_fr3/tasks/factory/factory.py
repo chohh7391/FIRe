@@ -154,14 +154,11 @@ class Factory(Task):
 
         # Convert to quat and set rot target
         angle = np.linalg.norm(rot_action)
-        axis = rot_action / angle
-
-        rot_action_quat = quat_from_angle_axis(angle, axis)
-        rot_action_quat = np.where(
-            angle > 1e-6,
-            rot_action_quat,
-            np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        )
+        if angle > 1e-6:
+            axis = rot_action / angle
+            rot_action_quat = quat_from_angle_axis(angle, axis)
+        else:
+            rot_action_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
         self.ctrl_target_fingertip_midpoint_quat = quat_mul(rot_action_quat, self.robot.ee_quat)
 
         target_euler_xyz = np.stack(get_euler_xyz(self.ctrl_target_fingertip_midpoint_quat))

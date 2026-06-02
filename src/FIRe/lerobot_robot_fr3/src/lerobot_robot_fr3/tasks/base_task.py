@@ -1,4 +1,4 @@
-from typing import Tuple, Dict
+from typing import Any, Tuple, Dict
 import numpy as np
 from abc import ABC, abstractmethod
 from lerobot_robot_fr3.utils import RobotStateManager, CameraSensorManager, FTSensorManager
@@ -75,6 +75,18 @@ class Task(ABC):
     @abstractmethod
     def get_log(self) -> Dict[str, np.ndarray]:
         raise NotImplementedError
+
+    def get_reward(self) -> float:
+        return 0.0
+
+    def get_done(self) -> bool:
+        return False
+
+    def get_truncated(self) -> bool:
+        return False
+
+    def get_info(self) -> Dict[str, Any]:
+        return {}
     
     @abstractmethod
     def process_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
