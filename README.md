@@ -104,3 +104,173 @@ python scripts/push_to_hub.py \
 --root test_data \
 --repo_id chohh7391/test_datasets
 ```
+
+# Residual SAC real robot training
+
+This workflow trains and plays a LeRobot SAC residual policy on top of the FIRe/VLA action path.
+It does not replace the RL-Games `scripts/play.py` workflow above.
+
+The residual policy uses the task observation/action definitions in:
+
+```bash
+src/FIRe/lerobot_robot_fr3/src/lerobot_robot_fr3/tasks
+```
+
+The final action sent to the robot is:
+
+```text
+final_action = vla_action + residual_action
+```
+
+For test runs, use `--test` to replace the VLA action with zero action.
+
+## Install FIRe keyboard teleoperator
+
+If the keyboard teleoperator package is not already installed in the `fire` environment:
+
+```bash
+conda activate fire
+cd /home/home/FIRe
+pip install -e src/FIRe/lerobot_teleoperators/lerobot_teleoperator_keyboard
+```
+
+## Bring up the robot/controller
+
+```bash
+conda activate fire
+source ~/ros2_ws/install/setup.bash
+ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py vla:=true control_mode:=torque
+```
+
+## Start the residual learner
+
+Run this in one terminal:
+
+```bash
+conda activate fire
+cd /home/home/FIRe
+
+python scripts/train_residual_learner.py \
+--task forge-peg_insert \
+--fps 15 \
+--output_dir outputs/fire_residual \
+--device cuda \
+--storage_device cpu \
+--batch_size 256 \
+--online_steps 100000 \
+--online_buffer_capacity 100000 \
+--online_step_before_learning 100
+```
+
+## Start the residual actor without VLA server
+
+Run this in another sourced terminal. `--test` uses zero VLA action. `--teleop_device keyboard`
+enables simple keyboard intervention.
+
+```bash
+conda activate fire
+source ~/ros2_ws/install/setup.bash
+cd /home/home/FIRe
+
+python scripts/train_residual_actor.py \
+--task forge-peg_insert \
+--fps 15 \
+--output_dir outputs/fire_residual \
+--device cuda \
+--storage_device cpu \
+--learner_host 127.0.0.1 \
+--learner_port 50051 \
+--online_steps 10000 \
+--use_sim_time \
+--test \
+--residual_scale 0.05 \
+--teleop_device keyboard
+```
+
+Keyboard teleop currently maps:
+
+```text
+w: +x residual action
+s: -x residual action
+a: +y residual action
+d: -y residual action
+```
+
+## Start the residual actor with GR00T VLA
+
+Start the GR00T server first, then run:
+
+```bash
+conda activate fire
+source ~/ros2_ws/install/setup.bash
+cd /home/home/FIRe
+
+python scripts/train_residual_actor.py \
+--task forge-peg_insert \
+--fps 15 \
+--output_dir outputs/fire_residual \
+--device cuda \
+--storage_device cpu \
+--learner_host 127.0.0.1 \
+--learner_port 50051 \
+--online_steps 10000 \
+--use_sim_time \
+--use_cameras \
+--use_ft_sensor \
+--vla gr00t \
+--host localhost \
+--port 5555 \
+--residual_scale 0.05 \
+--teleop_device keyboard
+```
+
+## Play a trained residual policy
+
+`--policy` can point to the training output directory, a checkpoint directory, or a
+`pretrained_model` directory.
+
+Test mode without VLA server:
+
+```bash
+conda activate fire
+source ~/ros2_ws/install/setup.bash
+cd /home/home/FIRe
+
+python scripts/play_real.py \
+--task forge-peg_insert \
+--policy outputs/fire_residual \
+--device cuda \
+--control_hz 15 \
+--episode_length 300 \
+--use_sim_time \
+--test \
+--residual_scale 0.05 \
+--teleop_device keyboard
+```
+
+With GR00T VLA:
+
+```bash
+conda activate fire
+source ~/ros2_ws/install/setup.bash
+cd /home/home/FIRe
+
+python scripts/play_real.py \
+--task forge-peg_insert \
+--policy outputs/fire_residual \
+--device cuda \
+--control_hz 15 \
+--episode_length 300 \
+--use_sim_time \
+--use_cameras \
+--use_ft_sensor \
+--vla gr00t \
+--host localhost \
+--port 5555 \
+--residual_scale 0.05 \
+--teleop_device keyboard
+```
+
+Note: if task rewards are still the default `0.0` and `done/truncated` are always false,
+this workflow only verifies the actor-learner pipeline. Meaningful residual learning requires
+task-specific reward and termination logic.

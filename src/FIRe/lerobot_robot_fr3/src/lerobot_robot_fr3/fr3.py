@@ -1,5 +1,7 @@
 import threading
 import time
+import warnings
+from dataclasses import dataclass
 from typing import Any, Dict, Tuple
 import numpy as np
 
@@ -28,6 +30,13 @@ from .utils import RobotStateManager, CameraSensorManager, FTSensorManager
 from .utils.rotation_utils import wxyz2xyzw
 from .tasks import Task
 from . import create_task
+
+
+@dataclass
+class TeleopAction:
+    action: RobotAction
+    action_space: str
+    is_relative: bool
 
 
 class FR3Robot(Robot):
@@ -219,21 +228,33 @@ class FR3Robot(Robot):
         }
 
         return processed_action
-    
-    def send_processed_action(self, action:RobotAction) -> RobotAction:
+
+    def send_teleop_action(self, teleop_action: TeleopAction) -> RobotAction:
         if not self.is_connected:
             raise ConnectionError(f"{self.name} is not connected.")
 
         if not self._goal_accepted:
             self.node.get_logger().warn("Cannot send action: Goal not accepted yet.")
-            return action
-        
-        processed_arm_action = self.task.get_arm_action(action)
-        processed_gripper_action = self.task.get_gripper_action(action)
+            return teleop_action.action
+
+        arm_action = self.task.get_arm_action(teleop_action.action)
+        gripper_action = self.task.get_gripper_action(teleop_action.action)
+
+        if teleop_action.action_space == "task_space" and teleop_action.is_relative:
+            processed_arm_action, processed_gripper_action = self.task.process_action(
+                arm_action, gripper_action
+            )
+            action_space = self.config.action_space
+            is_relative = self.config.is_relative
+        else:
+            processed_arm_action = arm_action
+            processed_gripper_action = gripper_action
+            action_space = teleop_action.action_space
+            is_relative = teleop_action.is_relative
 
         if np.allclose(processed_arm_action[:3], 0.0, atol=1e-6):
             self.node.get_logger().warn(
-                "send_processed_action: target_pos is near-zero. "
+                "send_teleop_action: target_pos is near-zero. "
                 "Replacing with current EE pose to prevent unsafe motion."
             )
             processed_arm_action = np.concatenate([
@@ -241,21 +262,49 @@ class FR3Robot(Robot):
                 self.robot_state_manager.ee_quat,
             ]).astype(np.float32)
 
-        self.apply_action(processed_arm_action, processed_gripper_action)
+        self.apply_action(
+            processed_arm_action,
+            processed_gripper_action,
+            action_space=action_space,
+            is_relative=is_relative,
+        )
 
-        processed_action = {
+        return {
             "processed_arm_action": processed_arm_action,
             "processed_gripper_action": processed_gripper_action,
         }
-
-        return processed_action
+    
+    def send_processed_action(self, action:RobotAction) -> RobotAction:
+        warnings.warn(
+            "send_processed_action() is deprecated. Use send_teleop_action() "
+            "with TeleopAction(action_space='task_space', is_relative=False).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.send_teleop_action(
+            TeleopAction(
+                action=action,
+                action_space="task_space",
+                is_relative=False,
+            )
+        )
         
 
 
     def apply_action(
-        self, processed_arm_action: np.ndarray, processed_gripper_action: np.ndarray = None
+        self,
+        processed_arm_action: np.ndarray,
+        processed_gripper_action: np.ndarray = None,
+        *,
+        action_space: str | None = None,
+        is_relative: bool | None = None,
     ) -> None:
-        msg = self.wrap_action_to_msg(processed_arm_action, processed_gripper_action)
+        msg = self.wrap_action_to_msg(
+            processed_arm_action,
+            processed_gripper_action,
+            action_space=action_space,
+            is_relative=is_relative,
+        )
         # send action chunk message to VLA Action Server
         self.pub_action_chunk.publish(msg)
 
@@ -330,15 +379,26 @@ class FR3Robot(Robot):
     def configure(self) -> None:
         pass
 
-    def wrap_action_to_msg(self, arm_action: np.ndarray, gripper_action: np.ndarray = None) -> ActionChunk:
+    def wrap_action_to_msg(
+        self,
+        arm_action: np.ndarray,
+        gripper_action: np.ndarray = None,
+        *,
+        action_space: str | None = None,
+        is_relative: bool | None = None,
+    ) -> ActionChunk:
 
-        arm_action[3:7] = wxyz2xyzw(arm_action[3:7])
+        msg_action_space = action_space if action_space is not None else self.config.action_space
+        msg_is_relative = is_relative if is_relative is not None else self.config.is_relative
+
+        if msg_action_space in {"task", "task_space"} and self.config.rotation_type == "quaternion":
+            arm_action[3:7] = wxyz2xyzw(arm_action[3:7])
         gripper_action = gripper_action if gripper_action is not None else np.array([])
         
         msg = ActionChunk()
         msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
-        msg.action_space = self.config.action_space
-        msg.relative = self.config.is_relative
+        msg.action_space = msg_action_space
+        msg.relative = msg_is_relative
         msg.rotation_type = self.config.rotation_type
         msg.chunk_size = len(arm_action) // self.config.arm_action_dim
 
