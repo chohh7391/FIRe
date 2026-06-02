@@ -33,6 +33,16 @@ class Forge(Factory):
         super().create_buffer()
 
         self.force_sensor_world_smooth = np.zeros(6, dtype=np.float32)
+        self.force_sensor_world = np.zeros(6, dtype=np.float32)
+
+        # URDF:
+        #   ft_sensor -> fr3_hand: rpy=(0, 0, -pi/4)
+        #   fr3_hand -> fr3_hand_tcp: rpy=(0, 0, 0)
+        # self.robot.ee_quat is the fr3_hand_tcp orientation, so this maps
+        # FT sensor local vectors into the TCP frame before rotating to world.
+        self._q_tcp_from_ft = quat_from_euler_xyz(
+            roll=0.0, pitch=0.0, yaw=np.pi / 4
+        )
 
     def reset(self) -> None:
         super().reset()
@@ -193,23 +203,20 @@ class Forge(Factory):
 
     def compute_ft_force(self) -> np.ndarray:
         if self.ft_sensor is not None:
-            self.force_sensor_world = np.concatenate([
-                self.ft_sensor.force, self.ft_sensor.torque
-            ])
+            force_local = np.array(self.ft_sensor.force, dtype=np.float32)
+            torque_local = np.array(self.ft_sensor.torque, dtype=np.float32)
         else:
-            self.force_sensor_world = np.zeros(6, dtype=np.float32)
+            force_local = np.zeros(3, dtype=np.float32)
+            torque_local = np.zeros(3, dtype=np.float32)
+
+        q_world_from_ft = quat_mul(self.robot.ee_quat, self._q_tcp_from_ft)
+        self.force_sensor_world = np.concatenate([
+            quat_apply(q_world_from_ft, force_local),
+            quat_apply(q_world_from_ft, torque_local),
+        ]).astype(np.float32)
 
         self.force_sensor_world_smooth = self.alpha * self.force_sensor_world + (1 - self.alpha) * self.force_sensor_world_smooth
-
-        identity_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        self.force_sensor_smooth = np.zeros_like(self.force_sensor_world)
-        self.force_sensor_smooth[0:3], self.force_sensor_smooth[3:6] = self.change_FT_frame(
-            self.force_sensor_world_smooth[0:3],
-            self.force_sensor_world_smooth[3:6],
-            (identity_quat, np.zeros(3, dtype=np.float32)),
-            (identity_quat, self.fixed_pos_obs_frame)
-        )
-
+        self.force_sensor_smooth = self.force_sensor_world_smooth.copy()
         self.force = self.force_sensor_smooth[0:3]
 
         return self.force

@@ -93,7 +93,7 @@ python scripts/record.py \
 --task forge-peg_insert \
 --hf_checkpoint bhe1004/VLA_RL-BL-forge-peg_insert/nn/Forge.pth \
 --vla gr00t \
---lerobot_root /home/home/FIRe/test_data \
+--lerobot_root /home/home/datasets/FIRe/gr00t/peg_insert \
 --lerobot_task "Insert peg into the socket" \
 # --resume
 ```
