@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lerobot_ft_sensor"
 version = "0.1.0"
-description = "FR3 VLA Robot plugin for LeRobot using ROS 2"
+description = "Standalone LeRobot-compatible Bota force/torque sensor module"
 requires-python = ">=3.10"
 dependencies = [
     # ROS 2 (rclpy)는 시스템에 설치된 것을 사용하므로 여기에 적지 않습니다.

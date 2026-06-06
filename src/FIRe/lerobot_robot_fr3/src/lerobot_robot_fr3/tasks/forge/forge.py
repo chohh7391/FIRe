@@ -14,6 +14,9 @@ class Forge(Factory):
     def __init__(self, name: str):
         super().__init__(name)
 
+        self.hand_mass = 0.73
+        self.hand_gravity = np.array([0.0, 0.0, self.hand_mass * 9.81], dtype=np.float32)  # kg * m/s^2
+
     def create_config(self) -> None:
         if self.name == "peg_insert":
             self.env_cfg = ForgeTaskPegInsertCfg()
@@ -214,7 +217,9 @@ class Forge(Factory):
             quat_apply(q_world_from_ft, force_local),
             quat_apply(q_world_from_ft, torque_local),
         ]).astype(np.float32)
-
+        
+        # self.force_sensor_world[0:3] -= self.hand_gravity
+        
         self.force_sensor_world_smooth = self.alpha * self.force_sensor_world + (1 - self.alpha) * self.force_sensor_world_smooth
         self.force_sensor_smooth = self.force_sensor_world_smooth.copy()
         self.force = self.force_sensor_smooth[0:3]
