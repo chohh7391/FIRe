@@ -12,6 +12,8 @@ pip install -r requirements.txt
 ```bash
 conda create -n sam3 python=3.12
 conda activate sam3
+pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+pip install -e third_party/sam3
 pip install -e src/FIRe/vision_server
 ```
 
@@ -38,7 +40,7 @@ python scripts/run_vision_server.py
 
 - run model
 ```bash
-python scripts/play.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --cfg <CONFIG_PATH>
+python scripts/play.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH>
 ```
 
 - plot data
@@ -48,6 +50,15 @@ python scripts/plot_data.py --task <TASK_NAME> --sim <ISAACLAB_DATA> --real <COL
 ```bash
 python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla <VLA_NAME> --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>"
 ```
+
+- plot recorded LeRobot dataset
+```bash
+python scripts/plot_lerobot_dataset.py --root <LEROBOT_DATASET_ROOT> --task <TASK_NAME> --save_path <FIG_SAVE_PATH>
+```
+
+- Bota force/torque sensor setup
+
+See the standalone module guide at [src/FIRe/lerobot_ft_sensor/README.md](/home/home/FIRe/src/FIRe/lerobot_ft_sensor/README.md).
 
 
 # TEMPORARY COMMANDS
@@ -96,6 +107,40 @@ python scripts/record.py \
 --lerobot_root /home/home/datasets/FIRe/gr00t/peg_insert \
 --lerobot_task "Insert peg into the socket" \
 # --resume
+```
+
+- plot latest recorded LeRobot episode
+```bash
+conda activate fire
+cd /home/home/FIRe
+
+python scripts/plot_lerobot_dataset.py \
+--root /home/home/datasets/FIRe/gr00t/peg_insert \
+--task forge-peg_insert \
+--save_path /home/home/FIRe/outputs/plots/gr00t_peg_insert_latest.png
+```
+
+- plot all recorded LeRobot episodes
+```bash
+conda activate fire
+cd /home/home/FIRe
+
+python scripts/plot_lerobot_dataset.py \
+--root /home/home/datasets/FIRe/gr00t/peg_insert \
+--task forge-peg_insert \
+--episode -2 \
+--save_path /home/home/FIRe/outputs/plots/gr00t_peg_insert_all.png
+```
+
+- plot one LeRobot episode file directly
+```bash
+conda activate fire
+cd /home/home/FIRe
+
+python scripts/plot_lerobot_dataset.py \
+--data /home/home/datasets/FIRe/gr00t/peg_insert/data/chunk-000/episode_000000.parquet \
+--task forge-peg_insert \
+--save_path /home/home/FIRe/outputs/plots/gr00t_peg_insert_episode_000000.png
 ```
 
 - upload dataset to hugging face
