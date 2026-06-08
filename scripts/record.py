@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 from multiprocessing import RawValue
+from pathlib import Path
 from typing import Any
 
 import cv2
@@ -23,7 +24,7 @@ from fire_core.loop import run_control_loop
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--task",           default="forge-peg_insert")
-    checkpoint_group = p.add_mutually_exclusive_group(required=True)
+    checkpoint_group = p.add_mutually_exclusive_group(required=False)
     checkpoint_group.add_argument("--checkpoint", help="Local checkpoint path.")
     checkpoint_group.add_argument(
         "--hf_checkpoint",
@@ -40,13 +41,56 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lerobot_root",    default=None, help="Local root directory for the LeRobot dataset.")
     p.add_argument("--lerobot_task",    default=None, help="Natural-language task saved in the dataset.")
     p.add_argument("--resume",          action="store_true", help="Append a new episode to an existing dataset root.")
+    p.add_argument(
+        "--last_episode",
+        nargs="?",
+        const=-1,
+        type=int,
+        default=None,
+        help=(
+            "After recording, encode deferred GR00T videos from episode 0 through this inclusive "
+            "episode index. Omit the value to encode through the latest episode in the root. "
+            "If used without a checkpoint, runs encode-only mode."
+        ),
+    )
+    p.add_argument(
+        "--encoder_threads",
+        type=int,
+        default=None,
+        help="Optional number of threads per video encoder when encoding deferred videos.",
+    )
 
     args = p.parse_args()
+    if args.last_episode is not None:
+        if args.lerobot_root is None:
+            p.error("--last_episode requires --lerobot_root")
+        if args.last_episode < -1:
+            p.error("--last_episode must be >= 0, or omit the value to encode through the latest episode")
+
+    if args.checkpoint is None and args.hf_checkpoint is None:
+        if args.last_episode is not None:
+            return args
+        p.error("scripts/record.py requires --checkpoint or --hf_checkpoint unless --last_episode is used")
     if args.vla is None:
         p.error("scripts/record.py requires a recording backend via --vla")
+    if args.last_episode is not None and args.vla != "gr00t":
+        p.error("--last_episode is currently implemented for --vla gr00t only")
     if args.resume and args.vla != "gr00t":
         p.error("--resume is currently implemented for --vla gr00t only")
     return args
+
+
+def encode_deferred_videos(args: argparse.Namespace, root: Path | None = None) -> None:
+    from fire_core.recorders.gr00t_exporter import GR00TExporter
+
+    last_episode = None if args.last_episode == -1 else args.last_episode
+    GR00TExporter.encode_deferred_videos(
+        root=root or Path(args.lerobot_root),
+        last_episode=last_episode,
+        vcodec="h264",
+        encoder_threads=args.encoder_threads,
+        remove_images=True,
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -54,10 +98,15 @@ def parse_args() -> argparse.Namespace:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    args = parse_args()
+    encode_only = args.checkpoint is None and args.hf_checkpoint is None
+    if args.last_episode is not None and encode_only:
+        encode_deferred_videos(args)
+        return
+
     from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
     from lerobot_robot_fr3.fr3 import FR3Robot
 
-    args = parse_args()
     checkpoint_path = resolve_checkpoint_path(
         checkpoint=args.checkpoint,
         hf_checkpoint=args.hf_checkpoint,
@@ -104,6 +153,7 @@ def main() -> None:
             task_text=args.lerobot_task,
             fps=int(round(args.control_hz)),
             resume=args.resume,
+            defer_video_encoding=True,
         )
     elif args.vla == "pi05":
         from fire_core.recorders import PI05Recorder
@@ -151,18 +201,24 @@ def main() -> None:
     )
 
     # ── Control loop ──────────────────────────────────────────────────────────
+    encode_root: Path | None = None
     try:
         run_control_loop(robot, strategy, control_hz=args.control_hz, max_steps=args.episode_length, recorder=recorder)
     finally:
         try:
             if recorder:
                 recorder.save()
+                if args.last_episode is not None:
+                    encode_root = recorder.output_root
         finally:
             if infer_handle:
                 infer_handle.shutdown()
             cv2.destroyAllWindows()
             robot.disconnect()
             print("[INFO] Robot disconnected.")
+
+    if encode_root is not None:
+        encode_deferred_videos(args, root=encode_root)
 
 
 if __name__ == "__main__":

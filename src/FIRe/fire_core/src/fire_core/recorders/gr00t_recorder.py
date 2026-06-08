@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -12,6 +13,18 @@ from .utils import vector_feature
 
 class GR00TRecorder(BaseRecorder):
     """Record one episode through LeRobot, then export it to the GR00T v2 layout."""
+
+    def __init__(self, *args: Any, defer_video_encoding: bool = False, **kwargs: Any) -> None:
+        self._defer_video_encoding = defer_video_encoding
+        if defer_video_encoding:
+            kwargs["batch_encoding_size"] = 1_000_000
+        super().__init__(*args, **kwargs)
+
+    @property
+    def output_root(self) -> Path:
+        if self._uses_staging_root and self._resume_target_root is not None:
+            return self._resume_target_root
+        return self._dataset_root
 
     def _resolve_recording_root(self, dataset_root: Path, resume: bool) -> Path:
         self._resume_target_root = dataset_root
@@ -51,7 +64,11 @@ class GR00TRecorder(BaseRecorder):
             fps=self._fps,
             camera_shapes=self.camera_shapes,
         )
-        exporter.convert_episode(Path(self._vla_dataset.root), success)
+        exporter.convert_episode(
+            Path(self._vla_dataset.root),
+            success,
+            keep_images=self._defer_video_encoding,
+        )
 
         if self._uses_staging_root and self._resume_target_root is not None:
             episode_index = exporter.append_staging_episode(
@@ -60,4 +77,5 @@ class GR00TRecorder(BaseRecorder):
             )
             print(f"[INFO] Appended GR00T episode {episode_index:06d} to dataset: {self._resume_target_root}")
 
-        self._remove_images_dir(self._dataset_root or self._vla_dataset.root)
+        if not self._defer_video_encoding:
+            self._remove_images_dir(self._dataset_root or self._vla_dataset.root)

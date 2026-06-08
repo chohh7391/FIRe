@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from lerobot.datasets.video_utils import encode_video_frames
 
 from .base_recorder import VALID_TASK
 
@@ -23,7 +24,7 @@ class GR00TExporter:
         self._fps = fps
         self._camera_shapes = camera_shapes
 
-    def convert_episode(self, root: Path, success: bool) -> None:
+    def convert_episode(self, root: Path, success: bool, *, keep_images: bool = False) -> None:
         meta_dir = root / "meta"
         data_dir = root / "data" / "chunk-000"
         src_data = data_dir / "file-000.parquet"
@@ -39,7 +40,8 @@ class GR00TExporter:
         self._move_lerobot_videos_to_gr00t_layout(root, episode_index=0)
         self._remove_lerobot_metadata(meta_dir)
         self.rewrite_metadata(root)
-        self._remove_images_dir(root)
+        if not keep_images:
+            self._remove_images_dir(root)
 
     def append_staging_episode(self, *, staging_root: Path, target_root: Path) -> int:
         next_episode_index = self._next_episode_index(target_root)
@@ -72,9 +74,109 @@ class GR00TExporter:
             if src_video.exists():
                 shutil.move(str(src_video), str(dst_dir / f"episode_{next_episode_index:06d}.mp4"))
 
+            src_images = (
+                staging_root
+                / "images"
+                / f"observation.images.{view_name}"
+                / "episode-000000"
+            )
+            dst_images = (
+                target_root
+                / "images"
+                / f"observation.images.{view_name}"
+                / f"episode-{next_episode_index:06d}"
+            )
+            if src_images.exists():
+                if dst_images.exists():
+                    shutil.rmtree(dst_images)
+                dst_images.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(src_images), str(dst_images))
+
         self.rewrite_metadata(target_root)
         shutil.rmtree(staging_root)
         return next_episode_index
+
+    @classmethod
+    def encode_deferred_videos(
+        cls,
+        *,
+        root: Path,
+        last_episode: int | None,
+        vcodec: str = "h264",
+        encoder_threads: int | None = None,
+        remove_images: bool = True,
+    ) -> None:
+        if last_episode is None:
+            last_episode = cls._latest_episode_index(root)
+            if last_episode < 0:
+                print(f"[INFO] No episodes found to encode in dataset: {root}")
+                return
+        if last_episode < 0:
+            raise ValueError("--last_episode must be >= 0")
+
+        info_path = root / "meta" / "info.json"
+        if not info_path.exists():
+            raise FileNotFoundError(f"Missing GR00T metadata: {info_path}")
+
+        with info_path.open("r") as f:
+            info = json.load(f)
+
+        fps = int(round(float(info["fps"])))
+        video_keys = [
+            key
+            for key, feature in info.get("features", {}).items()
+            if key.startswith("observation.images.") and feature.get("dtype") == "video"
+        ]
+        if not video_keys:
+            raise ValueError(f"No video features found in metadata: {info_path}")
+
+        for episode_index in range(last_episode + 1):
+            for video_key in video_keys:
+                image_dir = root / "images" / video_key / f"episode-{episode_index:06d}"
+                video_path = (
+                    root
+                    / "videos"
+                    / "chunk-000"
+                    / video_key
+                    / f"episode_{episode_index:06d}.mp4"
+                )
+                if video_path.exists():
+                    print(f"[INFO] Video already exists, skipping: {video_path}")
+                    continue
+                if not image_dir.exists():
+                    raise FileNotFoundError(f"Missing deferred image directory: {image_dir}")
+
+                print(f"[INFO] Encoding {video_key} episode {episode_index:06d} -> {video_path}")
+                try:
+                    encode_video_frames(
+                        image_dir,
+                        video_path,
+                        fps=fps,
+                        vcodec=vcodec,
+                        pix_fmt="yuv420p",
+                        overwrite=True,
+                        encoder_threads=encoder_threads,
+                    )
+                except Exception:
+                    if video_path.exists():
+                        video_path.unlink()
+                    raise
+                if remove_images:
+                    shutil.rmtree(image_dir)
+
+        images_root = root / "images"
+        if remove_images and images_root.exists() and not any(images_root.rglob("frame-*.png")):
+            shutil.rmtree(images_root)
+
+    @classmethod
+    def _latest_episode_index(cls, root: Path) -> int:
+        indices: list[int] = []
+        for path in sorted((root / "data" / "chunk-000").glob("episode_*.parquet")):
+            try:
+                indices.append(int(path.stem.removeprefix("episode_")))
+            except ValueError:
+                continue
+        return max(indices, default=-1)
 
     def rewrite_metadata(self, root: Path) -> None:
         meta_dir = root / "meta"
