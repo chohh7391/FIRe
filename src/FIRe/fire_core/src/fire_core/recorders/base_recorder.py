@@ -54,6 +54,7 @@ class BaseRecorder(ABC):
         vcodec: str = "h264",
         streaming_encoding: bool = False,
         encoder_threads: int | None = None,
+        batch_encoding_size: int = 1,
     ) -> None:
         self._robot = robot
         self._task_key = task
@@ -70,6 +71,7 @@ class BaseRecorder(ABC):
         self._vcodec = vcodec
         self._streaming_encoding = streaming_encoding
         self._encoder_threads = encoder_threads
+        self._batch_encoding_size = batch_encoding_size
         
         # 설정 변수 저장 (자식 클래스에서 접근 가능하도록)
         self.camera_shapes = _camera_shapes(robot)
@@ -100,6 +102,10 @@ class BaseRecorder(ABC):
         )
 
     # ── [공통 헬퍼 메서드들: _resolve_root, _create_dataset 등 기존과 동일] ──
+    @property
+    def output_root(self) -> Path:
+        return self._dataset_root
+
     def _resolve_root(self, root: str | Path | None, repo_id: str | None = None, resume: bool = False) -> Path:
         if root is not None:
             path = Path(root)
@@ -153,6 +159,7 @@ class BaseRecorder(ABC):
             vcodec=self._vcodec,
             streaming_encoding=self._streaming_encoding,
             encoder_threads=self._encoder_threads,
+            batch_encoding_size=self._batch_encoding_size,
         )
 
     def _image_features(self, use_view_suffix: bool) -> dict[str, dict]:
