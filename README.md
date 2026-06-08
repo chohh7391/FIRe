@@ -46,10 +46,17 @@ python scripts/play.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH>
 - plot data
 python scripts/plot_data.py --task <TASK_NAME> --sim <ISAACLAB_DATA> --real <COLLECTED_DATA> --save_path <FIG_SAVE_PATH>
 
-- recorde data
+- record data
 ```bash
 python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla <VLA_NAME> --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>"
 ```
+
+- record GR00T data and encode all deferred videos after the episode
+```bash
+python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla gr00t --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>" --last_episode
+```
+
+Use `--resume` to append the next episode to the same dataset root. When `--last_episode` is set, `record.py` first records one episode without video encoding, then encodes every missing video in the dataset root after the robot disconnects. Existing `.mp4` files are skipped.
 
 - plot recorded LeRobot dataset
 ```bash
@@ -95,8 +102,10 @@ python scripts/record.py \
 --vla gr00t \
 --lerobot_root /home/home/FIRe/test_data \
 --lerobot_task "Insert peg into the socket" \
-# --resume
+--last_episode
 ```
+
+Add `--resume` to append another episode to the same dataset root.
 
 - record (huggingface checkpoint)
 ```bash
@@ -106,8 +115,23 @@ python scripts/record.py \
 --vla gr00t \
 --lerobot_root /home/home/datasets/FIRe/gr00t/peg_insert \
 --lerobot_task "Insert peg into the socket" \
-# --resume
+--last_episode
 ```
+
+Add `--resume` to append another episode to the same dataset root.
+
+`--last_episode` can also be used without a value after data has already been collected:
+
+```bash
+conda activate fire
+cd /home/home/FIRe
+
+python scripts/record.py \
+--lerobot_root /home/home/datasets/FIRe/gr00t/peg_insert \
+--last_episode
+```
+
+This encode-only mode does not connect to the robot. To encode only through a specific inclusive episode index, pass the index explicitly, for example `--last_episode 12`.
 
 - plot latest recorded LeRobot episode
 ```bash
