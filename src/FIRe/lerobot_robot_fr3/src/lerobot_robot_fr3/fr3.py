@@ -26,7 +26,8 @@ except ImportError:
 from lerobot.robots import Robot
 from lerobot.processor import RobotAction, RobotObservation
 from .config_fr3 import FR3RobotConfig
-from .utils import RobotStateManager, CameraSensorManager, FTSensorManager
+from lerobot_ft_sensor import FTSensor
+from .utils import RobotStateManager, CameraSensorManager
 from .utils.rotation_utils import wxyz2xyzw
 from .tasks import Task
 from . import create_task
@@ -62,7 +63,7 @@ class FR3Robot(Robot):
         # update robot state & can get robot state from this
         self.robot_state_manager = None
         self.camera_sensor_manager = None
-        self.ft_sensor_manager = None
+        self.ft_sensor = None
 
     @property
     def is_connected(self) -> bool:
@@ -98,14 +99,14 @@ class FR3Robot(Robot):
                 node=self.node, config=self.config.cameras, fps=30.0
             )
         if self.config.use_ft_sensor:
-            self.ft_sensor_manager = FTSensorManager(
+            self.ft_sensor = FTSensor(
                 node=self.node, config=self.config.ft_sensor
             )
 
         # allocate managers to task
         self.task.allocate_managers(
             robot=self.robot_state_manager,
-            ft_sensor=self.ft_sensor_manager,
+            ft_sensor=self.ft_sensor,
             camera_sensor=self.camera_sensor_manager,
         )
 
@@ -145,8 +146,8 @@ class FR3Robot(Robot):
         # connect to sensors
         if self.camera_sensor_manager is not None:
             self.camera_sensor_manager.connect()
-        if self.ft_sensor_manager is not None:
-            self.ft_sensor_manager.connect()
+        if self.ft_sensor is not None:
+            self.ft_sensor.connect()
 
         self.task.reset()
 
@@ -315,8 +316,8 @@ class FR3Robot(Robot):
         # disconnect to sensors
         if self.camera_sensor_manager is not None:
             self.camera_sensor_manager.disconnect()
-        if self.ft_sensor_manager is not None:
-            self.ft_sensor_manager.disconnect()
+        if self.ft_sensor is not None:
+            self.ft_sensor.disconnect()
 
         print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
         trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')

@@ -38,13 +38,12 @@ class Forge(Factory):
         self.force_sensor_world_smooth = np.zeros(6, dtype=np.float32)
         self.force_sensor_world = np.zeros(6, dtype=np.float32)
 
-        # URDF:
-        #   ft_sensor -> fr3_hand: rpy=(0, 0, -pi/4)
-        #   fr3_hand -> fr3_hand_tcp: rpy=(0, 0, 0)
-        # self.robot.ee_quat is the fr3_hand_tcp orientation, so this maps
-        # FT sensor local vectors into the TCP frame before rotating to world.
-        self._q_tcp_from_ft = quat_from_euler_xyz(
-            roll=0.0, pitch=0.0, yaw=np.pi / 4
+        # /ee_state/pose is fr3_hand_tcp. The FT topic is expressed in
+        # bota_ft_sensor_wrench, so rotate local FT vectors into TCP before
+        # applying the TCP-to-world rotation.
+        self._q_tcp_from_ft = quat_mul(
+            quat_from_euler_xyz(roll=np.pi, pitch=0.0, yaw=0.0),
+            quat_from_euler_xyz(roll=0.0, pitch=0.0, yaw=-np.pi / 4),
         )
 
     def reset(self) -> None:

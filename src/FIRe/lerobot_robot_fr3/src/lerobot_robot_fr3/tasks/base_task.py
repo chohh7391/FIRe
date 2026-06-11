@@ -1,7 +1,8 @@
 from typing import Any, Tuple, Dict
 import numpy as np
 from abc import ABC, abstractmethod
-from lerobot_robot_fr3.utils import RobotStateManager, CameraSensorManager, FTSensorManager
+from lerobot_ft_sensor import FTSensor
+from lerobot_robot_fr3.utils import RobotStateManager, CameraSensorManager
 import os, sys
 
 
@@ -10,7 +11,7 @@ class Task(ABC):
         self.name = name
         self._robot: RobotStateManager = None
         self._camera_sensor: CameraSensorManager = None
-        self._ft_sensor: FTSensorManager = None
+        self._ft_sensor: FTSensor = None
 
     @property
     def model_cfg_path(self) -> str:
@@ -31,14 +32,14 @@ class Task(ABC):
         return self._camera_sensor
     
     @property
-    def ft_sensor(self) -> FTSensorManager:
+    def ft_sensor(self) -> FTSensor:
         return self._ft_sensor
 
     def allocate_managers(
         self, 
         robot: RobotStateManager,
         camera_sensor: CameraSensorManager = None,
-        ft_sensor: FTSensorManager = None,
+        ft_sensor: FTSensor = None,
     ) -> None:
         self._robot = robot
         self._camera_sensor = camera_sensor
