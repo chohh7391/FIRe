@@ -17,3 +17,10 @@ dependencies = [
 
 [tool.setuptools]
 packages = { find = { where = ["src"] } }
+
+[tool.pytest.ini_options]
+testpaths = [
+    "src/FIRe/fire_core/test",
+    "src/FIRe/lerobot_ft_sensor/test",
+    "src/FIRe/lerobot_robot_fr3/test",
+]

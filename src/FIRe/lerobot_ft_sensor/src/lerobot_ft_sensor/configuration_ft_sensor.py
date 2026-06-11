@@ -1,17 +1,14 @@
 from dataclasses import dataclass
-import os
 
 
 @dataclass
 class FTSensorConfig:
-
-    config_path: str = os.path.join(os.path.dirname(__file__), "config", "bota_binary.json")
-    warmup_s: float = 1.0
     timeout_ms: int = 200
-    update_hz: float = 100.0
+    wrench_topic: str = "/bota_ft_sensor/wrench"
+    queue_size: int = 1
 
-    def __post_init__(self):
-        if not os.path.exists(self.config_path):
-            raise FileNotFoundError(f"FT Sensor config file not found: {self.config_path}")
-
-    
+    def __post_init__(self) -> None:
+        if not self.wrench_topic:
+            raise ValueError("FTSensorConfig.wrench_topic is required.")
+        if self.queue_size <= 0:
+            raise ValueError("FTSensorConfig.queue_size must be positive.")
