@@ -143,8 +143,52 @@ while True:
 
 ## 남은 작업
 
+### 필수 (하드웨어 연결 전 확인 필요)
+
 - [ ] **실제 기기로 통합 테스트** — `inverse3_server` 빌드 후 `/dev/inverse3_left`, `/dev/versegrip_left` 연결 확인
-- [ ] **position_scale 튜닝** — Inverse3 workspace(~15cm) 대 로봇 workspace 비율 보정
-- [ ] **Forge task constraint 선택적 적용** — teleop 시 roll/pitch 고정 여부 결정 (`is_relative=True` vs `False`)
-- [ ] **데이터셋 action format 정리** — 현재 teleop 녹화 시 absolute EEF pose(7-dim) 저장; GR00T 학습용 normalized format으로 변환 파이프라인 추가 검토
-- [ ] **Haptic feedback 연결** — `send_feedback({"force": ft_sensor.force})`로 FT 센서 데이터를 햅틱으로 전달
+
+- [ ] **좌표계 정렬 (translation)** — Inverse3의 XYZ 축 방향이 로봇 world frame과 일치하는지 확인 필요.
+  기기를 X 방향으로 움직였을 때 로봇도 X 방향으로 움직여야 한다.
+  축이 다르면 `inverse3_bridge.cpp`의 position 매핑에 축 변환 행렬 추가.
+
+- [ ] **좌표계 정렬 (rotation)** — VerseGrip quaternion의 reference frame이 로봇 base frame과 다를 수 있음.
+  기기를 roll/pitch/yaw로 각각 돌려보며 로봇 회전 방향과 대응 관계 확인.
+  필요 시 `_quat_wxyz_to_rotation()` 앞에 frame 변환 쿼터니언 추가.
+
+- [ ] **position_scale 튜닝** — Inverse3 workspace(~15cm) 대 로봇 유효 workspace 비율 보정.
+  `--position_scale` 인자로 조정하며 실험적으로 결정.
+
+### 기능 추가
+
+- [ ] **초기화 절차 (Initialize)** — 현재는 connect() 시 즉시 현재 위치를 home으로 잡음.
+  올바른 흐름:
+  1. 로봇이 초기 pose로 이동 (또는 현재 위치 확인)
+  2. 사용자가 Inverse3를 편안한 중립 위치에 잡음
+  3. **특정 버튼** (예: VerseGrip button-1)을 눌러 "초기화 완료" 신호 전달
+  4. 이 순간 `inv3_home` + `robot_home` 동시 캡처
+  5. 이후 enable button(button-0)으로 teleop 시작/일시정지
+  현재 enable button rising edge가 이 역할을 부분적으로 하지만,
+  "초기화 전 로봇이 움직이지 않아야 한다"는 보장이 명시적이지 않음.
+
+- [ ] **Teleop 종료 신호** — 현재는 `Ctrl+C`로만 종료 가능.
+  다음 방식 중 결정 필요:
+  - VerseGrip 버튼을 **특정 패턴** (예: 2초 이상 long press, 또는 더블 클릭)으로 누르면 종료
+  - 별도의 종료 전용 버튼 지정 (button bitmask에 여유 있음)
+  종료 시 로봇에게 마지막 명령 후 hold 상태로 전환해야 함 (갑작스러운 정지 방지).
+
+- [ ] **Gripper 제어** — 현재 `gripper_actions`는 항상 빈 배열로 전송.
+  VerseGrip 버튼(예: button-1)을 gripper 열기/닫기에 매핑.
+  `Inverse3TeleopConfig`에 `gripper_open_button`, `gripper_close_button` 추가 검토.
+  혹은 토글 방식 (버튼 누를 때마다 열림/닫힘 전환).
+
+- [ ] **Haptic force feedback 연결** — FT 센서 데이터를 햅틱으로 실시간 전달.
+  `send_feedback({"force": ft_sensor.force})`로 호출하면 `inverse3_server`가 `EndEffectorForce()`로 전달.
+  force scale 튜닝 필요 (너무 강하면 기기 손상 위험).
+
+### 데이터 품질
+
+- [ ] **데이터셋 action format 정리** — 현재 teleop 녹화 시 absolute EEF pose(7-dim) 저장.
+  GR00T 학습용 normalized format(6-dim, [-1,1])으로 변환하는 파이프라인 추가 검토.
+
+- [ ] **Forge task constraint 선택적 적용** — teleop 시 roll/pitch 고정 여부 결정.
+  현재 `is_relative=False`로 constraint bypass. 필요 시 task별 post-processing 추가.
