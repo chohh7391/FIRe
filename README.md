@@ -174,6 +174,59 @@ python scripts/push_to_hub.py \
 --repo_id chohh7391/test_datasets
 ```
 
+# Inverse3 Haptic Teleop
+
+Haption Inverse3 + VerseGrip로 demonstration을 직접 수집한다.
+상세 아키텍처 및 남은 작업은 [docs/inverse3_teleoperator.md](docs/inverse3_teleoperator.md) 참고.
+
+## Install
+
+```bash
+# C++ bridge server 빌드 (최초 1회)
+cd src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3/\
+src/lerobot_teleoperator_inverse3/inverse3_bridge
+make
+cd /home/home/FIRe
+
+# Python 패키지 설치
+conda activate fire
+pip install -e src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3
+```
+
+## Record demonstrations via teleop
+
+```bash
+conda activate fire
+source ~/ros2_ws/install/setup.bash
+
+python scripts/record.py \
+--teleop inverse3 \
+--task forge-peg_insert \
+--vla gr00t \
+--lerobot_root /home/home/datasets/FIRe/teleop/peg_insert \
+--lerobot_task "Insert peg into the socket" \
+--use_cameras \
+--inv3_port /dev/inverse3_left \
+--versegrip_port /dev/versegrip_left \
+--position_scale 1.0 \
+--episode_length 200 \
+--last_episode
+```
+
+Add `--resume` to append another episode to the same dataset root.
+
+**동작 방법:**
+- VerseGrip의 enable button(기본 bit-0)을 **누른 상태**에서 로봇이 따라온다.
+- 버튼을 **처음 누른 순간** Inverse3 현재 위치와 로봇 현재 위치가 자동으로 매칭된다 (점프 없음).
+- 버튼을 놓으면 일시 정지. 다시 누르면 현재 위치에서 새로 시작.
+- `Ctrl+C`로 녹화 중단 → 성공 여부 입력 후 저장.
+
+## Mock test (기기 없이 동작 확인)
+
+```bash
+python src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3/test_teleop_mock.py
+```
+
 # Residual SAC real robot training
 
 This workflow trains and plays a LeRobot SAC residual policy on top of the FIRe/VLA action path.
