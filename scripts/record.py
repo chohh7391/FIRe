@@ -116,7 +116,6 @@ def parse_args() -> argparse.Namespace:
     inv3.add_argument("--inv3_port",       default="/dev/inverse3_left")
     inv3.add_argument("--versegrip_port",  default="/dev/versegrip_left")
     inv3.add_argument("--position_scale",  type=float, default=3.0)
-    inv3.add_argument("--rotation_scale",  type=float, default=1.0)
     inv3.add_argument(
         "--position_axes",
         type=_parse_axes,
@@ -398,7 +397,6 @@ def main() -> None:
             inverse3_port=args.inv3_port,
             versegrip_port=args.versegrip_port,
             position_scale=args.position_scale,
-            rotation_scale=args.rotation_scale,
             position_axes=tuple(args.position_axes),
             rotation_axes=tuple(args.rotation_axes),
             reanchor_on_enable=not args.absolute_teleop,

@@ -10,8 +10,7 @@ from lerobot.teleoperators.config import TeleoperatorConfig
 class Inverse3TeleopConfig(TeleoperatorConfig):
     inverse3_port: str = "/dev/inverse3_left"
     versegrip_port: str = "/dev/versegrip_left"
-    position_scale: float = 2.0
-    rotation_scale: float = 1.0
+    position_scale: float = 3.0
     position_axes: tuple[str, str, str] = ("-y", "+x", "+z")
     rotation_axes: tuple[str, str, str] = ("-y", "+x", "+z")
     reanchor_on_enable: bool = True
