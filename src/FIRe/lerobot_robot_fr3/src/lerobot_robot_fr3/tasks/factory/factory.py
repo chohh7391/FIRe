@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 from lerobot_robot_fr3.tasks.base_task import Task
 from .factory_cfg import (
     FactoryTaskPegInsertCfg,
@@ -97,7 +97,9 @@ class Factory(Task):
         return action["arm_actions"]
 
     def get_gripper_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
-        return action["gripper_actions"]
+        if "gripper_actions" in action:
+            return np.asarray(action["gripper_actions"], dtype=np.float32).reshape(-1)
+        return np.array([-1.0], dtype=np.float32)
     
     def get_log(self) -> Dict[str, np.ndarray]:
         return {
@@ -132,7 +134,11 @@ class Factory(Task):
             "target_quat": (4,),
         }
     
-    def process_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def process_action(
+        self,
+        arm_action: np.ndarray,
+        gripper_action: Optional[np.ndarray],
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         # apply EMA smoothing to the input action to ensure smoother control
         self.action = self.ema_factor * arm_action.copy() + (1 - self.ema_factor) * self.action
 

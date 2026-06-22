@@ -1,5 +1,5 @@
 import numpy as np
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 from ..factory import Factory
 from .forge_cfg import (
     ForgeTaskPegInsertCfg,
@@ -111,13 +111,13 @@ class Forge(Factory):
     def get_gr00t_observation(self) -> Dict[str, np.ndarray]:
         return super().get_gr00t_observation()
 
-    def get_arm_action(self, action):
+    def get_arm_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
         return super().get_arm_action(action)
 
-    def get_gripper_action(self, action):
+    def get_gripper_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
         return super().get_gripper_action(action)
     
-    def get_log(self):
+    def get_log(self) -> Dict[str, np.ndarray]:
         return super().get_log()
     
     @property
@@ -143,7 +143,11 @@ class Forge(Factory):
     def log_features(self) -> Dict[str, Tuple[int, ...]]:
         return super().log_features
 
-    def process_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def process_action(
+        self,
+        arm_action: np.ndarray,
+        gripper_action: Optional[np.ndarray],
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         # apply EMA smoothing to the input action to ensure smoother control
         self.action = self.ema_factor * arm_action.copy() + (1 - self.ema_factor) * self.action
 
