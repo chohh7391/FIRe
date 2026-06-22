@@ -208,9 +208,8 @@ python scripts/record.py \
 --use_cameras \
 --inv3_port /dev/inverse3_left \
 --versegrip_port /dev/versegrip_left \
---position_scale 1.0 \
+--position_scale 3.0 \
 --episode_length 200 \
---last_episode
 ```
 
 Add `--resume` to append another episode to the same dataset root.

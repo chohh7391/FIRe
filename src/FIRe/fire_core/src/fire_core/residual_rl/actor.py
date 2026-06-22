@@ -26,6 +26,11 @@ from lerobot.utils.transition import Transition
 from lerobot.utils.utils import init_logging
 
 from fire_core.utils import total_dim
+from fire_core.vla_observation import (
+    VLAObservationNotReady,
+    get_ready_vla_observation,
+    wait_for_ready_vla_observation,
+)
 
 from .action import build_vla_action_chunk, combine_vla_and_residual, make_robot_action
 from .config import build_train_config
@@ -62,7 +67,7 @@ class AsyncVLAProvider(ResidualVLAProvider):
         self._chunk_step = 0
 
     def reset(self, robot: Any, action_dim: int) -> None:
-        raw = self._vla_policy.get_action_sync(robot.get_vla_observation())
+        raw = self._vla_policy.get_action_sync(wait_for_ready_vla_observation(robot))
         self._chunk = build_vla_action_chunk(raw, action_dim)
         self._requested = False
         self._chunk_step = 0
@@ -73,7 +78,7 @@ class AsyncVLAProvider(ResidualVLAProvider):
         assert self._chunk is not None
 
         chunk_idx = self._chunk_step % self._chunk_size
-        if chunk_idx == 0 and self._chunk_step != 0:
+        if chunk_idx == 0 and self._chunk_step != 0 and self._requested:
             try:
                 self._chunk = build_vla_action_chunk(self._vla_policy.get_result(), action_dim)
             except Exception as exc:
@@ -81,8 +86,11 @@ class AsyncVLAProvider(ResidualVLAProvider):
             self._requested = False
 
         if chunk_idx == self._chunk_size // 2 and not self._requested:
-            self._vla_policy.request_action(robot.get_vla_observation())
-            self._requested = True
+            try:
+                self._vla_policy.request_action(get_ready_vla_observation(robot))
+                self._requested = True
+            except VLAObservationNotReady as exc:
+                logging.warning("VLA request skipped: %s", exc)
 
         action = self._chunk[chunk_idx]
         self._chunk_step += 1

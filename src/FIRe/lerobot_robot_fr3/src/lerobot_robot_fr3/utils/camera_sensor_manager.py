@@ -1,3 +1,4 @@
+import time
 from rclpy.node import Node
 from typing import Dict, Tuple, List
 import numpy as np
@@ -16,7 +17,9 @@ class CameraSensorManager:
         self.bridge = CvBridge()
 
         # data
-        self._raw_data: Dict[str, np.ndarray] = {cam_name: None for cam_name in self._cameras.keys()}
+        self._raw_data: Dict[str, np.ndarray | None] = {cam_name: None for cam_name in self._cameras.keys()}
+        self._last_frame_time: Dict[str, float | None] = {cam_name: None for cam_name in self._cameras.keys()}
+        self._stale_after_s: float = 2.0
         
         self._is_connected = False
         self.is_initialized = False
@@ -45,6 +48,22 @@ class CameraSensorManager:
     @property
     def is_connected(self) -> bool:
         return self._is_connected
+
+    @property
+    def missing_frames(self) -> List[str]:
+        now = time.monotonic()
+        missing: List[str] = []
+        for cam_name, frame in self._raw_data.items():
+            last_frame_time = self._last_frame_time[cam_name]
+            if frame is None or last_frame_time is None:
+                missing.append(cam_name)
+            elif now - last_frame_time > self._stale_after_s:
+                missing.append(cam_name)
+        return missing
+
+    @property
+    def is_ready(self) -> bool:
+        return self._is_connected and self.is_initialized and not self.missing_frames
     
     @property
     def names(self) -> List[str]:
@@ -74,6 +93,7 @@ class CameraSensorManager:
                 frame = cam.async_read(timeout_ms=1000)
                 if frame is not None:
                     self._raw_data[cam_name] = frame
+                    self._last_frame_time[cam_name] = time.monotonic()
             
             if not self.is_initialized:
                 if all(frame is not None for frame in self._raw_data.values()):
