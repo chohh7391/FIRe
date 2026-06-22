@@ -83,7 +83,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--vla", type=str, default=None, choices=["gr00t", "pi05"])
     p.add_argument("--vla_chunk_size", type=int, default=16)
     p.add_argument("--host", type=str, default=None, choices=["localhost", "163.180.160.225"])
-    p.add_argument("--port", type=int, default=None, choices=[5555, 5556, 5557, 5558, 5559])
+    p.add_argument("--port", type=int, default=None, choices=[5555, 6666, 7777])
 
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--raw",  action="store_true", help="Replay: CSV obs → inference")

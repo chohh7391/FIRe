@@ -269,6 +269,7 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
 
         rl_action = self._wait_inference()
         combined = (rl_action + self._vla_chunk[chunk_idx]).astype(np.float32)
+        # combined = self._vla_chunk[chunk_idx]
         self._buffered_action = _model_action_to_action_dict(
             combined,
             self._action_features,
