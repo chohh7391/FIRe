@@ -1,4 +1,4 @@
-from typing import Any, Tuple, Dict
+from typing import Any, Dict, Optional, Tuple
 import numpy as np
 from abc import ABC, abstractmethod
 from lerobot_ft_sensor import FTSensor
@@ -70,7 +70,7 @@ class Task(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_gripper_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
+    def get_gripper_action(self, action: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
         raise NotImplementedError
     
     @abstractmethod
@@ -90,7 +90,11 @@ class Task(ABC):
         return {}
     
     @abstractmethod
-    def process_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def process_action(
+        self,
+        arm_action: np.ndarray,
+        gripper_action: Optional[np.ndarray],
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         raise NotImplementedError
     
     @property

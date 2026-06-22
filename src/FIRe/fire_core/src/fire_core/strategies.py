@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from multiprocessing import RawValue
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -53,11 +53,76 @@ class ControlStrategy(ABC):
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _zero_action(action_dim: int) -> dict:
+GRIPPER_ACTION_KEYS: tuple[str, ...] = (
+    "gripper_actions",
+    "gripper_action",
+    "action.gripper_close",
+    "action.gripper",
+)
+
+
+def _zero_action(action_dim: int) -> dict[str, np.ndarray]:
+    return {"arm_actions": np.zeros(action_dim, dtype=np.float32)}
+
+
+def _action_features(robot: Any) -> Features:
+    task = getattr(robot, "task", None)
+    return getattr(task, "action_features", {})
+
+
+def _model_action_to_action_dict(
+    model_action: np.ndarray,
+    action_features: Features,
+) -> dict[str, np.ndarray]:
+    action = np.asarray(model_action, dtype=np.float32).reshape(-1)
+    gripper_slice = feature_slice(action_features, "gripper_actions")
+    if gripper_slice is None:
+        return {"arm_actions": action}
+
+    gripper_action = action[gripper_slice].copy()
+    arm_chunks: list[np.ndarray] = []
+    offset = 0
+    for key, shape in action_features.items():
+        dim = int(np.prod(shape))
+        chunk = action[offset : offset + dim]
+        if key != "gripper_actions":
+            arm_chunks.append(chunk)
+        offset += dim
+
+    arm_action = (
+        np.concatenate(arm_chunks, axis=0).astype(np.float32, copy=False)
+        if arm_chunks
+        else np.zeros((0,), dtype=np.float32)
+    )
     return {
-        "arm_actions":     np.zeros(action_dim, dtype=np.float32),
-        "gripper_actions": np.array([-1.0], dtype=np.float32),
+        "arm_actions": arm_action,
+        "gripper_actions": gripper_action,
     }
+
+
+def _normalize_gripper_chunk(values: np.ndarray) -> np.ndarray:
+    chunk = np.asarray(values, dtype=np.float32)
+    if chunk.ndim == 3 and chunk.shape[0] == 1:
+        chunk = chunk.squeeze(0)
+    if chunk.ndim == 0:
+        chunk = chunk.reshape(1, 1)
+    elif chunk.ndim == 1:
+        chunk = chunk.reshape(-1, 1)
+    else:
+        chunk = chunk.reshape(chunk.shape[0], -1)
+    return chunk
+
+
+def _extract_gripper_chunk(raw_actions: dict[str, Any]) -> Optional[np.ndarray]:
+    for key in GRIPPER_ACTION_KEYS:
+        if key in raw_actions:
+            return _normalize_gripper_chunk(raw_actions[key])
+    return None
+
+
+def _chunk_row(chunk: np.ndarray, chunk_idx: int) -> np.ndarray:
+    row_idx = min(chunk_idx, chunk.shape[0] - 1)
+    return np.asarray(chunk[row_idx], dtype=np.float32).reshape(-1)
 
 
 def _spin_wait_inference(action_flag: RawValue, action_shm: torch.Tensor, action_dim: int) -> np.ndarray:
@@ -97,6 +162,7 @@ class LiveInferenceStrategy(ControlStrategy):
         self._action_flag = action_flag
         self._action_shm = action_shm
         self._action_dim = action_dim
+        self._action_features = _action_features(robot)
         self._buffered_action: dict = _zero_action(action_dim)
         self._pending_obs_dict: Optional[dict] = None
 
@@ -116,10 +182,10 @@ class LiveInferenceStrategy(ControlStrategy):
 
     def step(self, step_idx: int) -> Optional[StepResult]:
         arm_action = self._wait_inference()
-        self._buffered_action = {
-            "arm_actions":     arm_action,
-            "gripper_actions": np.array([-1.0], dtype=np.float32),
-        }
+        self._buffered_action = _model_action_to_action_dict(
+            arm_action,
+            self._action_features,
+        )
         return StepResult(
             obs_dict=self._pending_obs_dict,
             action_dict=self._buffered_action,
@@ -158,6 +224,7 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
         self._vla = vla_policy
         self._chunk_size = int(vla_chunk_size)
         self._vla_chunk: Optional[np.ndarray] = None
+        self._vla_gripper_chunk: Optional[np.ndarray] = None
         self._vla_requested = False
 
     def _build_vla_chunk(self, raw_actions: dict) -> np.ndarray:
@@ -171,11 +238,15 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
             chunk = np.concatenate([chunk, pad], axis=-1)
         return chunk
 
+    def _set_vla_chunk(self, raw_actions: dict) -> None:
+        self._vla_chunk = self._build_vla_chunk(raw_actions)
+        self._vla_gripper_chunk = _extract_gripper_chunk(raw_actions)
+
     def reset(self) -> dict:
         obs_dict = super().reset()
         vla_obs = wait_for_ready_vla_observation(self._robot)
         raw = self._vla.get_action_sync(vla_obs)
-        self._vla_chunk = self._build_vla_chunk(raw)
+        self._set_vla_chunk(raw)
         self._vla_requested = False
         return obs_dict
 
@@ -184,7 +255,7 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
 
         if chunk_idx == 0 and step_idx != 0 and self._vla_requested:
             try:
-                self._vla_chunk = self._build_vla_chunk(self._vla.get_result())
+                self._set_vla_chunk(self._vla.get_result())
             except Exception as e:
                 print(f"[WARN] VLA get_result failed: {e}, reusing previous chunk.")
             self._vla_requested = False
@@ -198,10 +269,15 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
 
         rl_action = self._wait_inference()
         combined = (rl_action + self._vla_chunk[chunk_idx]).astype(np.float32)
-        self._buffered_action = {
-            "arm_actions":     combined,
-            "gripper_actions": np.array([-1.0], dtype=np.float32),
-        }
+        self._buffered_action = _model_action_to_action_dict(
+            combined,
+            self._action_features,
+        )
+        if self._vla_gripper_chunk is not None:
+            self._buffered_action["gripper_actions"] = _chunk_row(
+                self._vla_gripper_chunk,
+                chunk_idx,
+            )
         return StepResult(
             obs_dict=self._pending_obs_dict,
             action_dict=self._buffered_action,
@@ -238,6 +314,7 @@ class ReplayRawStrategy(ControlStrategy):
         self._buffered_action: dict = _zero_action(action_dim)
         self._robot = robot
         self._obs_features = obs_features
+        self._action_features = _action_features(robot) if robot is not None else {}
         self._pending_obs_np: Optional[np.ndarray] = None
 
     def _load_obs_row(self, step_idx: int) -> np.ndarray:
@@ -305,10 +382,10 @@ class ReplayRawStrategy(ControlStrategy):
             print("\n[INFO] Replay CSV finished.")
             return None
         arm_action = self._wait_inference()
-        self._buffered_action = {
-            "arm_actions":     arm_action,
-            "gripper_actions": np.array([-1.0], dtype=np.float32),
-        }
+        self._buffered_action = _model_action_to_action_dict(
+            arm_action,
+            self._action_features,
+        )
         obs_dict = self._robot.get_observation() if self._robot is not None else None
         print(f"\r[REPLAY-RAW] {step_idx + 1}/{len(self._data)}", end="")
         return StepResult(
@@ -354,10 +431,7 @@ class ReplayPoseStrategy(ControlStrategy):
         if next_idx < len(self._data):
             row = self._data.iloc[next_idx]
             target_pose = row[self._pose_cols].to_numpy(dtype=np.float32)
-            self._buffered_action = {
-                "arm_actions":     target_pose,
-                "gripper_actions": np.array([-1.0], dtype=np.float32),
-            }
+            self._buffered_action = {"arm_actions": target_pose}
         else:
             self._buffered_action = _zero_action(self._action_dim)
         print(f"\r[REPLAY-POSE] {step_idx + 1}/{len(self._data)}", end="")

@@ -35,8 +35,11 @@ def combine_vla_and_residual(
     return pad_action(vla_action, action_dim) + residual
 
 
-def make_robot_action(arm_action: np.ndarray) -> Dict[str, np.ndarray]:
-    return {
-        "arm_actions": np.asarray(arm_action, dtype=np.float32),
-        "gripper_actions": np.array([-1.0], dtype=np.float32),
-    }
+def make_robot_action(
+    arm_action: np.ndarray,
+    gripper_action: Optional[np.ndarray] = None,
+) -> Dict[str, np.ndarray]:
+    action: Dict[str, np.ndarray] = {"arm_actions": np.asarray(arm_action, dtype=np.float32)}
+    if gripper_action is not None:
+        action["gripper_actions"] = np.asarray(gripper_action, dtype=np.float32).reshape(-1)
+    return action
