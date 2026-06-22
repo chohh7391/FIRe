@@ -46,8 +46,7 @@ def run() -> None:
     cfg = Inverse3TeleopConfig(
         inverse3_port="/dev/inverse3_left",
         versegrip_port="/dev/versegrip_left",
-        position_scale=2.0,   # 2× workspace scaling
-        rotation_scale=1.0,
+        position_scale=3.0,   # 3× workspace scaling
         position_axes=("+x", "+y", "+z"),
         rotation_axes=("+x", "+y", "+z"),
         enable_button=0,      # bit-0 of buttons bitmask
@@ -149,7 +148,7 @@ def run() -> None:
     cfg = Inverse3TeleopConfig(
         inverse3_port="/dev/inverse3_left",
         versegrip_port="/dev/versegrip_left",
-        position_scale=1.0,
+        position_scale=3.0,
         position_axes=("+y", "-x", "+z"),
         rotation_axes=("+y", "-x", "+z"),
         reanchor_on_enable=False,
@@ -175,7 +174,7 @@ def run() -> None:
     cfg = Inverse3TeleopConfig(
         inverse3_port="/dev/inverse3_left",
         versegrip_port="/dev/versegrip_left",
-        position_scale=1.0,
+        position_scale=3.0,
         position_axes=("+x", "+y", "+z"),
         rotation_axes=("+x", "+y", "+z"),
         reanchor_on_enable=False,

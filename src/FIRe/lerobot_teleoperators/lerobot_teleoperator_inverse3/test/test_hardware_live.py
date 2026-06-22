@@ -90,7 +90,6 @@ def teleop_live(args) -> None:
         inverse3_port=args.inverse3,
         versegrip_port=args.versegrip,
         position_scale=args.position_scale,
-        rotation_scale=args.rotation_scale,
         position_axes=tuple(args.position_axes),
         rotation_axes=tuple(args.rotation_axes),
         reanchor_on_enable=not args.absolute_teleop,

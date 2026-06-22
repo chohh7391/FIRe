@@ -200,9 +200,7 @@ class Inverse3Teleop(Teleoperator):
 
         delta_rot = cur_rot * self._inv3_home_rot.inv()
         delta_rot = self._rotation_map_rot * delta_rot * self._rotation_map_rot.inv()
-        if self.config.rotation_scale != 1.0:
-            delta_rot = Rotation.from_rotvec(delta_rot.as_rotvec() * self.config.rotation_scale)
-
+        
         return {
             "inv3.pos": delta_pos.astype(np.float32),
             "inv3.rot": _rotation_to_quat_wxyz(delta_rot),

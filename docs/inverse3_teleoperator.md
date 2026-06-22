@@ -170,8 +170,7 @@ while True:
 |---|---|---|
 | `inverse3_port` | `/dev/inverse3_left` | Inverse3 serial port |
 | `versegrip_port` | `/dev/versegrip_left` | VerseGrip serial port |
-| `position_scale` | `2.0` | Inv3 displacement → robot displacement 배율 |
-| `rotation_scale` | `1.0` | 회전 배율 |
+| `position_scale` | `3.0` | Inv3 displacement → robot displacement 배율 |
 | `position_axes` | `("-y", "+x", "+z")` | robot XYZ에 대응되는 signed Inverse3 translation axes |
 | `rotation_axes` | `("-y", "+x", "+z")` | robot XYZ에 대응되는 signed VerseGrip rotation frame axes (right-handed, det +1 필요) |
 | `reanchor_on_enable` | `True` | enable button rising edge마다 현재 Inverse3/robot pose를 home으로 재캡처 |
