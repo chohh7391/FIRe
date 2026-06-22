@@ -139,14 +139,16 @@ def parse_args() -> argparse.Namespace:
     inv3.add_argument(
         "--absolute_teleop",
         action="store_true",
+        default=True,
         help="Keep the initial device/robot home fixed instead of re-anchoring on enable.",
     )
     inv3.add_argument(
         "--require_calibration",
         action="store_true",
+        default=True,
         help="Do not send motion until calibration_button has been pressed.",
     )
-    inv3.add_argument("--enable_button",   type=int, default=0)
+    inv3.add_argument("--enable_button",   type=int, default=-1)
     inv3.add_argument("--calibration_button", type=int, default=2,
                       help="VerseGrip button bit to re-home rotation (and position)")
     inv3.add_argument("--grasp_button", type=int, default=0)
@@ -278,8 +280,8 @@ def run_teleop_loop(
     robot_home_pos = robot.robot_state_manager.ee_pos.copy()
     robot_home_quat = robot.robot_state_manager.ee_quat.copy()
 
-    print(f"\n[INFO] Teleop loop @ {control_hz} Hz  (hold enable button to control)")
-    print("[INFO] Press Ctrl+C to stop and save.")
+    print(f"\n[INFO] Teleop loop @ {control_hz} Hz")
+    print("[INFO] Press VerseGrip button 1 or Ctrl+C to stop and save.")
 
     step = 0
     try:

@@ -10,6 +10,11 @@ import pandas as pd
 import torch
 
 from fire_core.utils import Features, feature_slice, write_obs_shm
+from fire_core.vla_observation import (
+    VLAObservationNotReady,
+    get_ready_vla_observation,
+    wait_for_ready_vla_observation,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -168,7 +173,7 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
 
     def reset(self) -> dict:
         obs_dict = super().reset()
-        vla_obs = self._robot.get_vla_observation()
+        vla_obs = wait_for_ready_vla_observation(self._robot)
         raw = self._vla.get_action_sync(vla_obs)
         self._vla_chunk = self._build_vla_chunk(raw)
         self._vla_requested = False
@@ -177,7 +182,7 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
     def step(self, step_idx: int) -> Optional[StepResult]:
         chunk_idx = step_idx % self._chunk_size
 
-        if chunk_idx == 0 and step_idx != 0:
+        if chunk_idx == 0 and step_idx != 0 and self._vla_requested:
             try:
                 self._vla_chunk = self._build_vla_chunk(self._vla.get_result())
             except Exception as e:
@@ -185,8 +190,11 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
             self._vla_requested = False
 
         if chunk_idx == self._chunk_size // 2 and not self._vla_requested:
-            self._vla.request_action(self._robot.get_vla_observation())
-            self._vla_requested = True
+            try:
+                self._vla.request_action(get_ready_vla_observation(self._robot))
+                self._vla_requested = True
+            except VLAObservationNotReady as e:
+                print(f"[WARN] VLA request skipped: {e}")
 
         rl_action = self._wait_inference()
         combined = (rl_action + self._vla_chunk[chunk_idx]).astype(np.float32)

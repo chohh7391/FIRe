@@ -105,9 +105,14 @@ def teleop_live(args) -> None:
     teleop = Inverse3Teleop(cfg)
     print(f"[teleop] connecting {args.inverse3} / {args.versegrip} ...")
     teleop.connect(calibrate=True)
+    enable_text = (
+        "motion is always enabled after calibration"
+        if cfg.enable_button < 0
+        else f"HOLD button bit-{cfg.enable_button} to enable + move"
+    )
     print(
         f"[teleop] connected.\n"
-        f"         HOLD button bit-{cfg.enable_button} to enable + move (pos/rot become non-zero).\n"
+        f"         {enable_text} (pos/rot become non-zero).\n"
         f"         PRESS button bit-{cfg.calibration_button} to re-home rotation "
         f"(rot delta resets to 0 at current orientation).\n"
         f"         Ctrl+C to stop.\n"
@@ -156,13 +161,12 @@ def main() -> None:
                    help="print one line whenever the button bitmask changes (for mapping bits)")
     p.add_argument("--teleop", action="store_true",
                    help="drive Inverse3Teleop and print get_action() output (enable + calibration)")
-    p.add_argument("--position-scale", type=float, default=2.0)
-    p.add_argument("--rotation-scale", type=float, default=1.0)
+    p.add_argument("--position-scale", type=float, default=3.0)
     p.add_argument("--position-axes", type=parse_axes, default=("-y", "+x", "+z"))
     p.add_argument("--rotation-axes", type=parse_axes, default=("-y", "+x", "+z"))
-    p.add_argument("--absolute-teleop", action="store_true")
-    p.add_argument("--require-calibration", action="store_true")
-    p.add_argument("--enable-button", type=int, default=0)
+    p.add_argument("--absolute-teleop", action="store_true", default=True)
+    p.add_argument("--require-calibration", action="store_true", default=True)
+    p.add_argument("--enable-button", type=int, default=-1)
     p.add_argument("--calibration-button", type=int, default=2)
     p.add_argument("--grasp-button", type=int, default=0)
     p.add_argument("--end-episode-button", type=int, default=1)

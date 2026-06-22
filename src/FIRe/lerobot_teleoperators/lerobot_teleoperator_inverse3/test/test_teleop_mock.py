@@ -49,6 +49,8 @@ def run() -> None:
         position_scale=3.0,   # 3× workspace scaling
         position_axes=("+x", "+y", "+z"),
         rotation_axes=("+x", "+y", "+z"),
+        reanchor_on_enable=True,
+        require_calibration=False,
         enable_button=0,      # bit-0 of buttons bitmask
         calibration_button=1,  # bit-1 of buttons bitmask
     )
@@ -92,9 +94,9 @@ def run() -> None:
             pos=(0.06, 0.0, 0.0), buttons=1
         )
         action = teleop.get_action()
-        print_action("Moved 5 cm in X (scale=2) → expect +0.10 m", action)
+        print_action("Moved 5 cm in X (scale=3) → expect +0.15 m", action)
         assert action["inv3.enabled"].item()
-        expected_x = (0.06 - 0.01) * 2.0   # 5 cm × scale 2 = 0.10 m
+        expected_x = (0.06 - 0.01) * 3.0   # 5 cm × scale 3 = 0.15 m
         assert abs(action["inv3.pos"][0] - expected_x) < 1e-5, \
             f"Expected {expected_x}, got {action['inv3.pos'][0]}"
 
@@ -148,10 +150,11 @@ def run() -> None:
     cfg = Inverse3TeleopConfig(
         inverse3_port="/dev/inverse3_left",
         versegrip_port="/dev/versegrip_left",
-        position_scale=3.0,
+        position_scale=1.0,
         position_axes=("+y", "-x", "+z"),
         rotation_axes=("+y", "-x", "+z"),
         reanchor_on_enable=False,
+        require_calibration=False,
         enable_button=0,
     )
     teleop = Inverse3Teleop(cfg)
@@ -220,7 +223,7 @@ def run() -> None:
         action = teleop.get_action()
         print_action("Button1 requests episode end while gripper opens", action)
         assert action["inv3.enabled"].item()
-        assert np.allclose(action["inv3.pos"], [0.01, 0.0, 0.0], atol=1e-6)
+        assert np.allclose(action["inv3.pos"], [0.03, 0.0, 0.0], atol=1e-6)
         assert np.allclose(action["inv3.gripper"], [1.0])
         assert action["inv3.end_episode"].item()
         teleop.disconnect()

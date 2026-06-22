@@ -13,9 +13,9 @@ class Inverse3TeleopConfig(TeleoperatorConfig):
     position_scale: float = 3.0
     position_axes: tuple[str, str, str] = ("-y", "+x", "+z")
     rotation_axes: tuple[str, str, str] = ("-y", "+x", "+z")
-    reanchor_on_enable: bool = True
-    require_calibration: bool = False
-    enable_button: int = 0  # VerseGrip button bit; set to -1 for always enabled
+    reanchor_on_enable: bool = False
+    require_calibration: bool = True
+    enable_button: int = -1  # VerseGrip button bit; -1 means always enabled
     grasp_button: int = 0
     end_episode_button: int = 1
     gripper_open_value: float = 1.0
