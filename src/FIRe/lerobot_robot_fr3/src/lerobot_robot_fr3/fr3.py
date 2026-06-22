@@ -8,6 +8,7 @@ import numpy as np
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.signals import SignalHandlerOptions
 from std_msgs.msg import Header, Float64MultiArray
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -53,6 +54,7 @@ class FR3Robot(Robot):
 
         self.node = None
         self.executor_thread = None
+        self._executor = None
         self._is_connected = False
         
         # Action Client 관련 변수
@@ -74,8 +76,14 @@ class FR3Robot(Robot):
             return
 
         if not rclpy.ok():
-            rclpy.init()
-        
+            # Don't let rclpy install its own SIGINT handler: it would shut the
+            # context down the instant Ctrl+C is pressed, before disconnect() can
+            # send the success/cancel signals — which then crashed (invalid
+            # context) and left subprocesses (e.g. the Inverse3 bridge) wedged.
+            # With NO, Ctrl+C raises a normal KeyboardInterrupt we handle in the
+            # control loop, and the context stays valid for a clean disconnect.
+            rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+
         self.node = rclpy.create_node(
             'lerobot_fr3_vla_client',
             parameter_overrides=[
@@ -185,12 +193,19 @@ class FR3Robot(Robot):
         self._goal_accepted = True
 
     def _spin_ros(self):
-        executor = MultiThreadedExecutor(num_threads=4)
-        executor.add_node(self.node)
+        self._executor = MultiThreadedExecutor(num_threads=4)
+        self._executor.add_node(self.node)
         try:
-            executor.spin()
+            self._executor.spin()
+        except Exception:
+            # executor.shutdown()/rclpy.shutdown() during disconnect raises here
+            # (e.g. ExternalShutdownException); a clean exit, nothing to report.
+            pass
         finally:
-            executor.shutdown()
+            try:
+                self._executor.shutdown()
+            except Exception:
+                pass
 
     def get_observation(self) -> RobotObservation:
         if not self.is_connected:
@@ -310,56 +325,79 @@ class FR3Robot(Robot):
         self.pub_action_chunk.publish(msg)
 
     def disconnect(self) -> None:
-        if not self.is_connected:
+        if not self._is_connected:
             return
-        
-        # disconnect to sensors
-        if self.camera_sensor_manager is not None:
-            self.camera_sensor_manager.disconnect()
-        if self.ft_sensor is not None:
-            self.ft_sensor.disconnect()
+        # Mark disconnected up-front so any re-entry (double finally, __del__,
+        # interpreter shutdown) is a no-op and we never run this twice.
+        self._is_connected = False
 
-        print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
-        trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')
-        
-        # 서비스가 준비되었는지 짧게 대기
-        if trigger_client.wait_for_service(timeout_sec=2.0):
-            req = Trigger.Request()
-            future = trigger_client.call_async(req)
-            
-            # 비동기 완료 대기 (최대 1초)
-            t0 = time.time()
-            while not future.done() and time.time() - t0 < 1.0:
-                time.sleep(0.1)
-                
-            if future.done():
+        # disconnect sensors (best-effort)
+        for name, obj in (("camera", self.camera_sensor_manager),
+                          ("ft_sensor", self.ft_sensor)):
+            if obj is not None:
                 try:
-                    response = future.result()
-                    print(f"[{self.name}] Trigger Response: {response.success} - {response.message}")
+                    obj.disconnect()
                 except Exception as e:
-                    print(f"[{self.name}] Failed to get response from Trigger service: {e}")
-        else:
-            print(f"[{self.name}] Warning: /vla/trigger_success service is not available.")
+                    print(f"[{self.name}] {name} disconnect error: {e}")
 
-        # 제어 안전 종료: 활성화된 Goal이 있다면 Cancel 요청 전송
-        if self._goal_handle is not None and self._goal_accepted:
-            print(f"[{self.name}] Canceling VLA Action goal for safe stop...")
-            cancel_future = self._goal_handle.cancel_goal_async()
-            
-            # 서버가 Cancel 요청을 처리할 시간을 잠깐 벌어줌
-            t0 = time.time()
-            while not cancel_future.done() and time.time() - t0 < 1.0:
-                time.sleep(0.1)
-
-        if self.node:
-            self.node.destroy_node()
+        # ROS signaling only while the context is valid. Guarded so a shut-down
+        # context can never crash us (which previously caused a segfault).
         if rclpy.ok():
-            rclpy.shutdown()
-        
+            try:
+                print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
+                trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')
+                if trigger_client.wait_for_service(timeout_sec=2.0):
+                    future = trigger_client.call_async(Trigger.Request())
+                    t0 = time.time()
+                    while not future.done() and time.time() - t0 < 1.0:
+                        time.sleep(0.1)
+                    if future.done():
+                        try:
+                            response = future.result()
+                            print(f"[{self.name}] Trigger Response: {response.success} - {response.message}")
+                        except Exception as e:
+                            print(f"[{self.name}] Failed to get response from Trigger service: {e}")
+                else:
+                    print(f"[{self.name}] Warning: /vla/trigger_success service is not available.")
+
+                # 제어 안전 종료: 활성화된 Goal이 있다면 Cancel 요청 전송
+                if self._goal_handle is not None and self._goal_accepted:
+                    print(f"[{self.name}] Canceling VLA Action goal for safe stop...")
+                    cancel_future = self._goal_handle.cancel_goal_async()
+                    t0 = time.time()
+                    while not cancel_future.done() and time.time() - t0 < 1.0:
+                        time.sleep(0.1)
+            except Exception as e:
+                print(f"[{self.name}] ROS shutdown signaling skipped: {e}")
+        else:
+            print(f"[{self.name}] ROS context already down; skipping success/cancel signaling.")
+
+        # Stop the executor first so spin() returns and the thread exits before
+        # we destroy the node — destroying a node still being spun crashes the
+        # rclpy C++ layer (segfault) during teardown.
+        if self._executor is not None:
+            try:
+                self._executor.shutdown()
+            except Exception as e:
+                print(f"[{self.name}] executor shutdown error: {e}")
+        if self.executor_thread is not None:
+            self.executor_thread.join(timeout=2.0)
+
+        # Tear down node / context (each guarded independently).
+        try:
+            if self.node is not None:
+                self.node.destroy_node()
+        except Exception as e:
+            print(f"[{self.name}] node destroy error: {e}")
+        if rclpy.ok():
+            try:
+                rclpy.shutdown()
+            except Exception as e:
+                print(f"[{self.name}] rclpy shutdown error: {e}")
+
         if self.executor_thread is not None:
             self.executor_thread.join(timeout=1.0)
 
-        self._is_connected = False
         print(f"[{self.name}] Disconnected.")
 
     @property

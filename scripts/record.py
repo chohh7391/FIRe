@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import sys
 import time
 from multiprocessing import RawValue
 from pathlib import Path
@@ -32,6 +33,37 @@ def _wxyz_to_rotation(q: np.ndarray) -> Rotation:
 def _rotation_to_wxyz(r: Rotation) -> np.ndarray:
     x, y, z, w = r.as_quat()
     return np.array([w, x, y, z], dtype=np.float32)
+
+
+_AXIS_CHOICES: tuple[str, ...] = ("+x", "-x", "+y", "-y", "+z", "-z")
+
+
+def _normalize_axis_args(argv: list[str]) -> list[str]:
+    normalized: list[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in {"--position_axes", "--rotation_axes"} and i + 3 < len(argv):
+            axes = argv[i + 1:i + 4]
+            if all(axis in _AXIS_CHOICES for axis in axes):
+                normalized.append(f"{arg}={','.join(axes)}")
+                i += 4
+                continue
+        normalized.append(arg)
+        i += 1
+    return normalized
+
+
+def _parse_axes(value: str) -> tuple[str, str, str]:
+    axes = tuple(part.strip() for part in value.replace(" ", ",").split(",") if part.strip())
+    if len(axes) != 3 or any(axis not in _AXIS_CHOICES for axis in axes):
+        raise argparse.ArgumentTypeError(
+            "expected 3 signed axes from +x, -x, +y, -y, +z, -z"
+        )
+    axis_names = {axis[1] for axis in axes}
+    if axis_names != {"x", "y", "z"}:
+        raise argparse.ArgumentTypeError("axes must use x, y, z exactly once")
+    return axes  # type: ignore[return-value]
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -83,11 +115,52 @@ def parse_args() -> argparse.Namespace:
     inv3 = p.add_argument_group("Inverse3 Teleop")
     inv3.add_argument("--inv3_port",       default="/dev/inverse3_left")
     inv3.add_argument("--versegrip_port",  default="/dev/versegrip_left")
-    inv3.add_argument("--position_scale",  type=float, default=1.0)
+    inv3.add_argument("--position_scale",  type=float, default=3.0)
     inv3.add_argument("--rotation_scale",  type=float, default=1.0)
+    inv3.add_argument(
+        "--position_axes",
+        type=_parse_axes,
+        default=("-y", "+x", "+z"),
+        metavar="ROBOT_X,ROBOT_Y,ROBOT_Z",
+        help=(
+            "Signed Inverse3 axes used for robot XYZ. Example: "
+            "--position_axes +y -x +z maps robot x=+device y, robot y=-device x."
+        ),
+    )
+    inv3.add_argument(
+        "--rotation_axes",
+        type=_parse_axes,
+        default=("-y", "+x", "+z"),
+        metavar="ROBOT_X,ROBOT_Y,ROBOT_Z",
+        help=(
+            "Right-handed signed VerseGrip frame mapping for robot XYZ. "
+            "Must have determinant +1."
+        ),
+    )
+    inv3.add_argument(
+        "--absolute_teleop",
+        action="store_true",
+        help="Keep the initial device/robot home fixed instead of re-anchoring on enable.",
+    )
+    inv3.add_argument(
+        "--require_calibration",
+        action="store_true",
+        help="Do not send motion until calibration_button has been pressed.",
+    )
     inv3.add_argument("--enable_button",   type=int, default=0)
+    inv3.add_argument("--calibration_button", type=int, default=2,
+                      help="VerseGrip button bit to re-home rotation (and position)")
+    inv3.add_argument("--grasp_button", type=int, default=0)
+    inv3.add_argument("--end_episode_button", type=int, default=1)
+    inv3.add_argument("--gripper_open_value", type=float, default=1.0)
+    inv3.add_argument("--gripper_close_value", type=float, default=-1.0)
+    inv3.add_argument(
+        "--haptic_feedback",
+        action="store_true",
+        help="Allow send_feedback() to apply external force to the Inverse3.",
+    )
 
-    args = p.parse_args()
+    args = p.parse_args(_normalize_axis_args(sys.argv[1:]))
 
     # ── Validation ────────────────────────────────────────────────────────────
     if args.last_episode is not None:
@@ -149,6 +222,25 @@ def _build_recorder(args: argparse.Namespace, robot: Any) -> Any | None:
     return None
 
 
+def _validate_inverse3_ports(args: argparse.Namespace) -> None:
+    missing_ports = [
+        port for port in (args.inv3_port, args.versegrip_port)
+        if not Path(port).exists()
+    ]
+    if not missing_ports:
+        return
+
+    raise SystemExit(
+        "[ERROR] Inverse3 device port not found: "
+        + ", ".join(missing_ports)
+        + "\nCheck USB connection/permissions and udev symlinks, or pass "
+        "--inv3_port/--versegrip_port with the current /dev/ttyACM* paths.\n"
+        "Useful checks:\n"
+        "  ls -l /dev/inverse3_left /dev/versegrip_left\n"
+        "  ls -l /dev/ttyACM* /dev/ttyUSB*"
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Encode helper
 # ──────────────────────────────────────────────────────────────────────────────
@@ -171,7 +263,15 @@ def encode_deferred_videos(
 # Teleop control loop
 # ──────────────────────────────────────────────────────────────────────────────
 
-def run_teleop_loop(robot, teleop, recorder, *, control_hz: float, max_steps: int) -> None:
+def run_teleop_loop(
+    robot: Any,
+    teleop: Any,
+    recorder: Any | None,
+    *,
+    control_hz: float,
+    max_steps: int,
+    reanchor_on_enable: bool,
+) -> None:
     from lerobot_robot_fr3.fr3 import TeleopAction
 
     dt = 1.0 / control_hz
@@ -189,14 +289,36 @@ def run_teleop_loop(robot, teleop, recorder, *, control_hz: float, max_steps: in
 
             action = teleop.get_action()
             enabled = bool(action["inv3.enabled"].item())
+            calibrated = bool(action.get("inv3.calibrated", np.array([False])).item())
+            end_episode = bool(action.get("inv3.end_episode", np.array([False])).item())
+            buttons = int(action["inv3.buttons"][0])
+            if end_episode:
+                print("\n[INFO] End episode button pressed.")
+                break
 
-            # Rising edge: re-anchor robot home so robot stays put on engage
-            if enabled and not prev_enabled:
+            if calibrated:
+                robot_home_pos = robot.robot_state_manager.ee_pos.copy()
+                robot_home_quat = robot.robot_state_manager.ee_quat.copy()
+                print(f"\n[INFO] Teleop calibrated — home: {robot_home_pos}")
+
+            # Rising edge: re-anchor robot home so robot stays put on engage.
+            # Absolute teleop keeps the initial home fixed for the whole episode.
+            if not calibrated and reanchor_on_enable and enabled and not prev_enabled:
                 robot_home_pos = robot.robot_state_manager.ee_pos.copy()
                 robot_home_quat = robot.robot_state_manager.ee_quat.copy()
                 print(f"\n[INFO] Teleop engaged — home: {robot_home_pos}")
 
             prev_enabled = enabled
+
+            # Live status so it's obvious whether the buttons are registering.
+            dp = action["inv3.pos"]
+            gripper_action = np.asarray(action["inv3.gripper"], dtype=np.float32).reshape(1)
+            print(
+                f"\r[teleop] enabled={int(enabled)} btn={buttons:08b} "
+                f"dpos=({dp[0]:+.3f},{dp[1]:+.3f},{dp[2]:+.3f}) "
+                f"grip={gripper_action[0]:+.1f} step={step}   ",
+                end="", flush=True,
+            )
 
             if not enabled:
                 sleep_t = dt - (time.time() - t0)
@@ -217,7 +339,7 @@ def run_teleop_loop(robot, teleop, recorder, *, control_hz: float, max_steps: in
             robot.send_teleop_action(TeleopAction(
                 action={
                     "arm_actions": arm_action,
-                    "gripper_actions": np.array([], dtype=np.float32),
+                    "gripper_actions": gripper_action,
                 },
                 action_space="task_space",
                 is_relative=False,
@@ -226,7 +348,7 @@ def run_teleop_loop(robot, teleop, recorder, *, control_hz: float, max_steps: in
             if recorder is not None:
                 recorder.record(
                     arm_action=arm_action,
-                    gripper_action=np.array([-1.0], dtype=np.float32),
+                    gripper_action=gripper_action,
                 )
 
             step += 1
@@ -251,6 +373,9 @@ def main() -> None:
         encode_deferred_videos(args)
         return
 
+    if args.teleop == "inverse3":
+        _validate_inverse3_ports(args)
+
     from lerobot_robot_fr3.config_fr3 import FR3RobotConfig
     from lerobot_robot_fr3.fr3 import FR3Robot
 
@@ -274,7 +399,17 @@ def main() -> None:
             versegrip_port=args.versegrip_port,
             position_scale=args.position_scale,
             rotation_scale=args.rotation_scale,
+            position_axes=tuple(args.position_axes),
+            rotation_axes=tuple(args.rotation_axes),
+            reanchor_on_enable=not args.absolute_teleop,
+            require_calibration=args.require_calibration,
             enable_button=args.enable_button,
+            calibration_button=args.calibration_button,
+            grasp_button=args.grasp_button,
+            end_episode_button=args.end_episode_button,
+            gripper_open_value=args.gripper_open_value,
+            gripper_close_value=args.gripper_close_value,
+            haptic_feedback_enabled=args.haptic_feedback,
         )
         teleop = Inverse3Teleop(teleop_cfg)
 
@@ -297,6 +432,7 @@ def main() -> None:
                 robot, teleop, recorder,
                 control_hz=args.control_hz,
                 max_steps=args.episode_length,
+                reanchor_on_enable=not args.absolute_teleop,
             )
         finally:
             try:
