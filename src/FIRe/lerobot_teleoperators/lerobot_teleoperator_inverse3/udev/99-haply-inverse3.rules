@@ -1,0 +1,22 @@
+# Stable device symlinks for the Haply Inverse3 + VerseGrip teleoperator.
+#
+# The raw /dev/ttyACMx numbers are NOT stable: the Inverse3 (a Teensy) and the
+# VerseGrip USB transceiver re-enumerate (and swap numbers) whenever they reset
+# or are replugged. These rules pin a fixed symlink per physical unit, keyed on
+# its USB serial, matching the defaults in Inverse3TeleopConfig.
+#
+# Install:
+#   sudo cp 99-haply-inverse3.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   # then replug the devices (or `sudo udevadm trigger --action=add`)
+#
+# Verify:  ls -l /dev/inverse3_left /dev/versegrip_left
+#
+# For a second (right) arm, duplicate these lines with that unit's serials and
+# SYMLINK+="inverse3_right" / "versegrip_right".
+
+# Inverse3 haptic device (Teensyduino "Haply inverse3")
+SUBSYSTEM=="tty", ATTRS{idVendor}=="16c0", ATTRS{idProduct}=="0483", ATTRS{serial}=="16894910", SYMLINK+="inverse3_left", MODE="0660", GROUP="dialout"
+
+# VerseGrip wireless USB transceiver ("Haply USB Transceiver")
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2fe3", ATTRS{idProduct}=="0100", ATTRS{serial}=="548F7FD33638E628", SYMLINK+="versegrip_left", MODE="0660", GROUP="dialout"

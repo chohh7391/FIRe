@@ -3,6 +3,7 @@
 -e ./src/FIRe/lerobot_ft_sensor
 -e ./src/FIRe/fire_core
 -e ./src/FIRe/lerobot_teleoperators/lerobot_teleoperator_keyboard
+-e ./src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3
     
 # 2. 최상위 프레임워크를 Editable로 설치
 -e .

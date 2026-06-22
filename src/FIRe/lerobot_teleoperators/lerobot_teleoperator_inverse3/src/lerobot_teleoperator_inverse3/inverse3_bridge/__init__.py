@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import select
 import subprocess
 from pathlib import Path
 from typing import NamedTuple
@@ -28,8 +29,30 @@ class DeviceState(NamedTuple):
 class Inverse3Server:
     """Subprocess wrapper around inv3_server — manages both Inverse3 and VerseGrip."""
 
-    def __init__(self, inv3_port: str, versegrip_port: str) -> None:
+    def __init__(
+        self,
+        inv3_port: str,
+        versegrip_port: str,
+        *,
+        open_timeout_s: float = 8.0,
+        response_timeout_s: float = 2.0,
+    ) -> None:
         _require_server()
+        self._response_timeout_s = response_timeout_s
+        self._proc: subprocess.Popen[str] | None = None
+
+        missing_ports = [
+            port for port in (inv3_port, versegrip_port)
+            if not Path(port).exists()
+        ]
+        if missing_ports:
+            raise FileNotFoundError(
+                "[Inv3Server] Device port not found: "
+                + ", ".join(missing_ports)
+                + ". Check USB connection and udev symlinks, or pass "
+                "--inv3_port/--versegrip_port with the current /dev/ttyACM* paths."
+            )
+
         self._proc = subprocess.Popen(
             [str(_SERVER)],
             stdin=subprocess.PIPE,
@@ -37,18 +60,33 @@ class Inverse3Server:
             text=True,
             bufsize=1,
         )
-        self._send(f"OPEN {inv3_port} {versegrip_port}")
-        resp = self._recv()
-        if not resp.startswith("OK"):
-            self._proc.terminate()
-            raise RuntimeError(f"[Inv3Server] OPEN failed: {resp}")
+        try:
+            self._send(f"OPEN {inv3_port} {versegrip_port} 0 0.0")
+            resp = self._recv(timeout_s=open_timeout_s)
+            if not resp.startswith("OK"):
+                raise RuntimeError(f"[Inv3Server] OPEN failed: {resp}")
+        except Exception:
+            self.close()
+            raise
 
     def _send(self, msg: str) -> None:
+        if self._proc is None or self._proc.stdin is None or self._proc.poll() is not None:
+            raise RuntimeError("[Inv3Server] server process is not running")
         self._proc.stdin.write(msg + "\n")
         self._proc.stdin.flush()
 
-    def _recv(self) -> str:
+    def _recv(self, timeout_s: float | None = None) -> str:
+        if self._proc is None or self._proc.stdout is None:
+            raise RuntimeError("[Inv3Server] server process is not running")
+        timeout = self._response_timeout_s if timeout_s is None else timeout_s
+        ready, _, _ = select.select([self._proc.stdout], [], [], timeout)
+        if not ready:
+            raise TimeoutError(
+                f"[Inv3Server] No response from inverse3_server within {timeout:.1f}s"
+            )
         line = self._proc.stdout.readline()
+        if line == "":
+            raise RuntimeError("[Inv3Server] server process exited without a response")
         return line.rstrip("\n")
 
     def _parse_state(self, line: str) -> DeviceState:
@@ -74,7 +112,7 @@ class Inverse3Server:
         return self._parse_state(self._recv())
 
     def close(self) -> None:
-        if self._proc.poll() is None:
+        if self._proc is not None and self._proc.poll() is None:
             try:
                 self._send("CLOSE")
                 self._proc.wait(timeout=2.0)
