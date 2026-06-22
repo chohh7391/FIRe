@@ -18,6 +18,7 @@ from fire_core.checkpoints import resolve_checkpoint_path
 from fire_core.utils import total_dim
 from fire_core.inference import start_inference_process
 from fire_core.strategies import LiveInferenceStrategy
+from fire_core.logger import StepLogger
 from fire_core.loop import run_control_loop
 
 
@@ -83,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lerobot_repo_id", default=None)
     p.add_argument("--lerobot_root",    default=None)
     p.add_argument("--lerobot_task",    default=None)
+    p.add_argument("--obs_save_path",   default=None, help="Directory to save per-step observation CSV (like play.py --save_path).")
     p.add_argument("--resume", action="store_true")
     p.add_argument(
         "--last_episode",
@@ -456,6 +458,7 @@ def main() -> None:
     )
 
     obs_features    = robot.task.observation_features
+    log_features    = robot.task.log_features
     action_features = robot.task.action_features
     obs_dim    = total_dim(obs_features)
     action_dim = total_dim(action_features)
@@ -503,16 +506,22 @@ def main() -> None:
         obs_flag, action_flag, action_shm, action_dim,
     )
 
+    # ── Logger ────────────────────────────────────────────────────────────────
+    logger = StepLogger(robot, obs_features, log_features) if args.obs_save_path else None
+
     encode_root = None
     try:
         run_control_loop(
             robot, strategy,
             control_hz=args.control_hz,
             max_steps=args.episode_length,
+            logger=logger,
             recorder=recorder,
         )
     finally:
         try:
+            if logger:
+                logger.save(args.obs_save_path)
             if recorder:
                 recorder.save()
                 if args.last_episode is not None:

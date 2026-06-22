@@ -58,6 +58,11 @@ python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla
 
 Use `--resume` to append the next episode to the same dataset root. When `--last_episode` is set, `record.py` first records one episode without video encoding, then encodes every missing video in the dataset root after the robot disconnects. Existing `.mp4` files are skipped.
 
+Add `--obs_save_path <DIR>` to also dump per-step observation info to a CSV (same format as `play.py --save_path`), independent of the LeRobot dataset:
+```bash
+python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla <VLA_NAME> --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>" --obs_save_path <OBS_CSV_DIR>
+```
+
 - plot recorded LeRobot dataset
 ```bash
 python scripts/plot_lerobot_dataset.py --root <LEROBOT_DATASET_ROOT> --task <TASK_NAME> --save_path <FIG_SAVE_PATH>

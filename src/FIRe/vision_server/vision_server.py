@@ -118,11 +118,21 @@ def _add_text_prompt(datapoint, text_query, counter):
 # 3. Vision Server 클래스
 # ===========================================================================
 class VisionServer:
-    def __init__(self, camera_configs: dict, port: int = 5555,
-                 use_sam3: bool = False, text_prompts: dict = None, device: str = "cuda"):
+    def __init__(
+        self,
+        camera_configs: dict,
+        port: int = 5555,
+        use_sam3: bool = False,
+        text_prompts: dict = None,
+        device: str = "cuda",
+        width_size: int = 256,
+        height_size: int = 256,
+    ) -> None:
         self.port = port
         self.use_sam3 = use_sam3
         self.device = device
+        self.width_size = width_size
+        self.height_size = height_size
         # str은 list[str]로 정규화 (단일 물체도 리스트로 통일)
         raw_prompts = text_prompts or {}
         self.text_prompts = {
@@ -166,6 +176,25 @@ class VisionServer:
                 detection_threshold=0.5, to_cpu=True
             )
 
+    def _prepare_image(self, image: np.ndarray) -> np.ndarray:
+        """Publish images as contiguous uint8 RGB arrays with shape (height, width, 3)."""
+        prepared = np.asarray(image)
+        if prepared.ndim == 2:
+            prepared = np.repeat(prepared[:, :, None], 3, axis=2)
+        if prepared.ndim != 3:
+            raise ValueError(f"Expected image with 3 dims, got shape {prepared.shape}.")
+        if prepared.shape[2] == 4:
+            prepared = prepared[:, :, :3]
+        if prepared.shape[2] != 3:
+            raise ValueError(f"Expected image with 3 channels, got shape {prepared.shape}.")
+        if prepared.shape[:2] != (self.height_size, self.width_size):
+            prepared = cv2.resize(
+                prepared,
+                (self.width_size, self.height_size),
+                interpolation=cv2.INTER_AREA,
+            )
+        return np.ascontiguousarray(prepared, dtype=np.uint8)
+
     @staticmethod
     def _encode_image(image: np.ndarray, quality: int = 85) -> str:
         """RGB 이미지를 Base64 JPEG 문자열로 인코딩 (색상 변환 없음, LeRobot 호환)"""
@@ -175,7 +204,7 @@ class VisionServer:
     def _warmup_sam3(self):
         """더미 이미지로 SAM3 첫 추론 실행."""
         logger.info("Warming up SAM3... This may take a minute.")
-        dummy = Image.fromarray(np.zeros((480, 640, 3), dtype=np.uint8))
+        dummy = Image.fromarray(np.zeros((self.height_size, self.width_size, 3), dtype=np.uint8))
         dps = []
         for name in self.cameras.keys():
             prompts = self.text_prompts.get(name, ["object"])
@@ -301,6 +330,7 @@ class VisionServer:
 
                 message = {"timestamps": {}, "images": {}}
                 for name, frame in processed_frames.items():
+                    frame = self._prepare_image(frame)
                     message["timestamps"][name] = time.time()
                     message["images"][name] = self._encode_image(frame)
 

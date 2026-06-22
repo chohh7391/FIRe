@@ -39,11 +39,12 @@ class Forge(Factory):
         self.force_sensor_world = np.zeros(6, dtype=np.float32)
 
         # /ee_state/pose is fr3_hand_tcp. The FT topic is expressed in
-        # bota_ft_sensor_wrench, so rotate local FT vectors into TCP before
-        # applying the TCP-to-world rotation.
-        self._q_tcp_from_ft = quat_mul(
-            quat_from_euler_xyz(roll=np.pi, pitch=0.0, yaw=0.0),
-            quat_from_euler_xyz(roll=0.0, pitch=0.0, yaw=-np.pi / 4),
+        # bota_ft_sensor_wrench. URDF: wrench -> hand_tcp has yaw -pi/4,
+        # so wrench vectors are rotated into TCP with the inverse yaw +pi/4.
+        self._q_tcp_from_ft = quat_from_euler_xyz(
+            roll=0.0,
+            pitch=0.0,
+            yaw=np.pi / 4,
         )
 
     def reset(self) -> None:
@@ -117,8 +118,10 @@ class Forge(Factory):
     def get_gripper_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
         return super().get_gripper_action(action)
     
-    def get_log(self) -> Dict[str, np.ndarray]:
-        return super().get_log()
+    def get_log(self):
+        log = super().get_log()
+        log["ft_force"] = self.force
+        return log
     
     @property
     def observation_features(self) -> Dict[str, Tuple[int, ...]]:
@@ -141,7 +144,7 @@ class Forge(Factory):
 
     @property
     def log_features(self) -> Dict[str, Tuple[int, ...]]:
-        return super().log_features
+        return {**super().log_features, "ft_force": (3,)}
 
     def process_action(
         self,
