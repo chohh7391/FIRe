@@ -34,7 +34,7 @@ class Inverse3Server:
         inv3_port: str,
         versegrip_port: str,
         *,
-        open_timeout_s: float = 8.0,
+        open_timeout_s: float = 25.0,
         response_timeout_s: float = 2.0,
     ) -> None:
         _require_server()
