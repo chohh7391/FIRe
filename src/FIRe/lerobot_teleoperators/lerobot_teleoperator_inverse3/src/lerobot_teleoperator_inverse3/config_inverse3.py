@@ -13,6 +13,13 @@ class Inverse3TeleopConfig(TeleoperatorConfig):
     position_scale: float = 3.0
     position_axes: tuple[str, str, str] = ("-y", "+x", "+z")
     rotation_axes: tuple[str, str, str] = ("-y", "+x", "+z")
+    # The VerseGrip reports absolute orientation whose horizontal heading (yaw about
+    # gravity) is set by its magnetometer / power-on direction and so differs per
+    # machine/location. Left uncorrected, that heading offset cross-couples roll and
+    # pitch (yaw stays fine). When True, calibration captures the grip's heading and
+    # cancels it, so the calibration orientation defines "forward" regardless of the
+    # device's absolute heading. Hold the stylus in the canonical pose when calibrating.
+    align_heading_on_calibration: bool = True
     reanchor_on_enable: bool = False
     require_calibration: bool = True
     enable_button: int = -1  # VerseGrip button bit; -1 means always enabled

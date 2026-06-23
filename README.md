@@ -182,7 +182,8 @@ python scripts/push_to_hub.py \
 # Inverse3 Haptic Teleop
 
 Haption Inverse3 + VerseGrip로 demonstration을 직접 수집한다.
-상세 아키텍처 및 남은 작업은 [docs/inverse3_teleoperator.md](docs/inverse3_teleoperator.md) 참고.
+최초 세팅(빌드 / udev 시리얼 포트 설정 / 문제 해결)은 [docs/inverse3_setup.md](docs/inverse3_setup.md) 참고.
+상세 아키텍처 및 운용 매뉴얼은 [docs/inverse3_teleoperator.md](docs/inverse3_teleoperator.md) 참고.
 
 ## Install
 
@@ -214,7 +215,7 @@ python scripts/record.py \
 --inv3_port /dev/inverse3_left \
 --versegrip_port /dev/versegrip_left \
 --position_scale 3.0 \
---episode_length 200 \
+--episode_length 200
 ```
 
 Add `--resume` to append another episode to the same dataset root.

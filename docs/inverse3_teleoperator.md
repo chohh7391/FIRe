@@ -75,10 +75,16 @@ python scripts/record.py --teleop inverse3 \
 권장 조작 순서:
 
 1. Inverse3를 편한 중립 위치로 둔다.
-2. Button 2를 눌러 calibration한다.
+2. **stylus를 기준 방향(로봇 정면에 대응시키고 싶은 방향)으로 잡은 채** Button 2를 눌러 calibration한다.
 3. Inverse3를 움직여 로봇을 조작한다.
 4. 물체를 잡을 때만 Button 0을 누른다.
 5. episode가 끝나면 Button 1을 누른다.
+
+> **회전(roll/pitch) 정렬:** VerseGrip의 절대 자세는 magnetometer/전원-on 방향에 따라
+> heading(중력축 기준 yaw)이 컴퓨터·장소마다 달라진다. 이를 보정하지 않으면 yaw는 맞는데
+> roll/pitch가 섞인다. `align_heading_on_calibration`(기본 True)이 calibration 시점의 grip
+> heading을 기준으로 잡아 이 offset을 제거하므로, **calibration 자세가 곧 forward 기준**이
+> 된다. 그래서 2번에서 stylus를 일관된 기준 방향으로 잡고 누르는 것이 중요하다.
 
 ## 4. 현재 기본값
 
@@ -89,6 +95,7 @@ python scripts/record.py --teleop inverse3 \
 | `position_scale` | `3.0` |
 | `position_axes` | `("-y", "+x", "+z")` |
 | `rotation_axes` | `("-y", "+x", "+z")` |
+| `align_heading_on_calibration` | `True` (heading offset 제거, roll/pitch 정렬) |
 | `absolute_teleop` | 기본 사용 |
 | `enable_button` | `-1`, 항상 enabled |
 | `require_calibration` | 기본 사용 |

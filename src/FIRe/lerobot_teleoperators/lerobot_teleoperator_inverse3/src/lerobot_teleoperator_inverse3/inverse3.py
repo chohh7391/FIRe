@@ -52,6 +52,23 @@ def _rotation_to_quat_wxyz(r: Rotation) -> np.ndarray:
     return np.array([w, x, y, z], dtype=np.float32)
 
 
+def _heading_about_z(rot: Rotation) -> Rotation:
+    """Twist (rotation about world +Z) component of `rot`, via swing-twist decomposition.
+
+    The device-world +Z axis is gravity-aligned (consistent across machines), while the
+    horizontal heading about it is environment-dependent. Conjugating a rotation delta by
+    the inverse of this heading re-aligns the horizontal (roll/pitch) axes without touching
+    yaw. Returns identity when the heading is undefined (rotation is ~180° about a
+    horizontal axis, i.e. no Z component).
+    """
+    x, y, z, w = rot.as_quat()  # scipy returns [x, y, z, w]
+    twist = np.array([0.0, 0.0, z, w])
+    norm = float(np.linalg.norm(twist))
+    if norm < 1e-8:
+        return Rotation.identity()
+    return Rotation.from_quat(twist / norm)
+
+
 _IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
 
 
@@ -76,6 +93,9 @@ class Inverse3Teleop(Teleoperator):
         self._is_connected = False
         self._inv3_home_pos: np.ndarray = np.zeros(3, dtype=np.float32)
         self._inv3_home_rot: Rotation = Rotation.identity()
+        # Heading (yaw-about-gravity) correction captured at calibration; see
+        # _heading_about_z and config.align_heading_on_calibration.
+        self._heading_correction: Rotation = Rotation.identity()
         self._enabled: bool = False
         self._is_calibrated_by_button: bool = not self.config.require_calibration
         self._calib_pressed: bool = False
@@ -137,9 +157,17 @@ class Inverse3Teleop(Teleoperator):
         state = self._server.get_state()
         self._inv3_home_pos = state.position.copy()
         self._inv3_home_rot = _quat_wxyz_to_rotation(state.quaternion)
+        self._capture_heading_correction(self._inv3_home_rot)
         self._enabled = False
         self._is_calibrated_by_button = not self.config.require_calibration
         self._calib_pressed = False
+
+    def _capture_heading_correction(self, home_rot: Rotation) -> None:
+        """Record the heading-cancelling rotation for the given home orientation."""
+        if self.config.align_heading_on_calibration:
+            self._heading_correction = _heading_about_z(home_rot).inv()
+        else:
+            self._heading_correction = Rotation.identity()
 
     def configure(self) -> None:
         pass
@@ -164,6 +192,7 @@ class Inverse3Teleop(Teleoperator):
         if calibrated:
             self._inv3_home_pos = state.position.copy()
             self._inv3_home_rot = cur_rot
+            self._capture_heading_correction(cur_rot)
             self._is_calibrated_by_button = True
         self._calib_pressed = calib
 
@@ -198,7 +227,11 @@ class Inverse3Teleop(Teleoperator):
         delta_pos = self._position_map @ (state.position - self._inv3_home_pos)
         delta_pos = delta_pos * self.config.position_scale
 
+        # Relative rotation in the device-world frame, then cancel the device's
+        # environment-dependent heading (about gravity) so roll/pitch stay aligned
+        # to the calibration grip, and finally remap device axes to robot axes.
         delta_rot = cur_rot * self._inv3_home_rot.inv()
+        delta_rot = self._heading_correction * delta_rot * self._heading_correction.inv()
         delta_rot = self._rotation_map_rot * delta_rot * self._rotation_map_rot.inv()
         
         return {
