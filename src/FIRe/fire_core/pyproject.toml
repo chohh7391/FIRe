@@ -11,7 +11,9 @@ dependencies = [
     # "numpy<2.0.0",
     "huggingface-hub",
     "rl-games",
-    "torch"
+    "torch",
+    "requests",
+    "json-numpy",
 ]
 
 [tool.setuptools]

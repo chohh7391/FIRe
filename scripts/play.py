@@ -80,10 +80,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--use_cameras",    action="store_true")
     p.add_argument("--use_ft_sensor",  action="store_true")
     p.add_argument("--use_sim_time",   action="store_true")
-    p.add_argument("--vla", type=str, default=None, choices=["gr00t", "pi05"])
-    p.add_argument("--vla_chunk_size", type=int, default=16)
+    p.add_argument("--vla", type=str, default=None, choices=["gr00t", "pi05", "openvla"])
+    p.add_argument(
+        "--vla_chunk_size", type=int, default=None,
+        help="Action chunk size. Defaults per backend: gr00t=16, pi05=8, openvla=8.",
+    )
     p.add_argument("--host", type=str, default=None, choices=["localhost", "163.180.160.225"])
-    p.add_argument("--port", type=int, default=None, choices=[5555, 6666, 7777])
+    p.add_argument("--port", type=int, default=None)
 
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--raw",  action="store_true", help="Replay: CSV obs → inference")
@@ -106,6 +109,7 @@ def main() -> None:
     from lerobot_robot_fr3.fr3 import FR3Robot
     from fire_core.vla_clients import (
         AsyncGr00tInferenceClient, AsyncPi05InferenceClient,
+        AsyncOpenVLAInferenceClient,
     )
 
     args = parse_args()
@@ -139,6 +143,10 @@ def main() -> None:
     action_flag = RawValue(ctypes.c_int32, 0)
 
     # ── VLA client ────────────────────────────────────────────────────────────
+    VLA_DEFAULT_CHUNK_SIZE = {"gr00t": 16, "pi05": 8, "openvla": 8}
+    if args.vla is not None and args.vla_chunk_size is None:
+        args.vla_chunk_size = VLA_DEFAULT_CHUNK_SIZE[args.vla]
+
     if args.vla is not None:
         assert args.host is not None and args.port is not None
         if args.vla == "gr00t":
@@ -146,6 +154,11 @@ def main() -> None:
         elif args.vla == "pi05":
             host = "127.0.0.1" if args.host == "localhost" else args.host
             vla_policy = AsyncPi05InferenceClient(host=host, port=args.port)
+        elif args.vla == "openvla":
+            host = "127.0.0.1" if args.host == "localhost" else args.host
+            vla_policy = AsyncOpenVLAInferenceClient(
+                host=host, port=args.port, task_name=args.task,
+            )
     else:
         vla_policy = None
 

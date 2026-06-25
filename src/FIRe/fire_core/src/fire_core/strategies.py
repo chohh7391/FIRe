@@ -239,7 +239,14 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
         return chunk
 
     def _set_vla_chunk(self, raw_actions: dict) -> None:
-        self._vla_chunk = self._build_vla_chunk(raw_actions)
+        chunk = self._build_vla_chunk(raw_actions)
+        # Align the replan cadence to the VLA's actual action horizon so we never
+        # index past the returned chunk. Different backends return different
+        # horizons (gr00t=16, pi05=10, ...); cap by the user-requested size.
+        horizon = int(chunk.shape[0])
+        effective = min(self._chunk_size, horizon) if horizon > 0 else self._chunk_size
+        self._chunk_size = max(1, effective)
+        self._vla_chunk = chunk[: self._chunk_size]
         self._vla_gripper_chunk = _extract_gripper_chunk(raw_actions)
 
     def reset(self) -> dict:
@@ -268,8 +275,8 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
                 print(f"[WARN] VLA request skipped: {e}")
 
         rl_action = self._wait_inference()
-        combined = (rl_action + self._vla_chunk[chunk_idx]).astype(np.float32)
-        # combined = self._vla_chunk[chunk_idx]
+        # combined = (rl_action + self._vla_chunk[chunk_idx]).astype(np.float32)
+        combined = self._vla_chunk[chunk_idx]
         self._buffered_action = _model_action_to_action_dict(
             combined,
             self._action_features,
