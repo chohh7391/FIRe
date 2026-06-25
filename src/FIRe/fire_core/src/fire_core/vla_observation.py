@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import time
+import warnings
 from typing import Any
 
 import numpy as np
+
+_warned_no_cameras = False
 
 
 class VLAObservationNotReady(RuntimeError):
@@ -20,10 +23,18 @@ def _validate_camera_ready(robot: Any) -> None:
     use_cameras = bool(getattr(config, "use_cameras", False))
 
     if not use_cameras:
-        raise VLAObservationConfigError(
-            "VLA observation is not ready: robot was started without cameras. "
-            "Run with --use_cameras before enabling a VLA backend."
-        )
+        # Cameras disabled: the robot feeds zero-filled camera frames into the VLA
+        # observation, so inference can still run for testing. Warn once instead of
+        # blocking, since the visual inputs are not real.
+        global _warned_no_cameras
+        if not _warned_no_cameras:
+            warnings.warn(
+                "VLA observation running without cameras: zero-filled camera frames "
+                "are being used. Run with --use_cameras for real visual inputs.",
+                stacklevel=2,
+            )
+            _warned_no_cameras = True
+        return
     if camera_manager is None:
         raise VLAObservationConfigError("VLA observation is not ready: camera manager is missing.")
     if not getattr(camera_manager, "is_connected", False):
