@@ -43,6 +43,36 @@ python scripts/run_vision_server.py
 python scripts/play.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH>
 ```
 
+## VLA backends (`--vla`)
+
+`play.py` (and `record.py` / `train_residual_actor.py` / `play_real.py`) can drive the
+RL action path with different VLA servers via `--vla`. Supported backends:
+
+| `--vla`   | server                                   | protocol        | default port | chunk size |
+|-----------|------------------------------------------|-----------------|--------------|------------|
+| `gr00t`   | Isaac-GR00T `inference_service.py`       | ZMQ             | 5555         | 16         |
+| `pi05`    | openpi `serve_policy.py`                 | WebSocket       | 8000         | 8          |
+| `openvla` | openvla-oft `vla-scripts/deploy_batch.py`| HTTP            | 8778         | 8          |
+
+The chunk size is auto-selected per backend (override with `--vla_chunk_size`). FIRe speaks a
+single gr00t-canonical observation/action format internally; each client
+(`src/FIRe/fire_core/src/fire_core/vla_clients/`) translates to/from its server's format, so the
+backends are interchangeable.
+
+```bash
+# pi05 (openpi WebSocket server on port 8000)
+python scripts/play.py --task forge-peg_insert --checkpoint <CHECKPOINT_PATH> \
+  --vla pi05 --host 163.180.160.225 --port 8000
+
+# openvla (openvla-oft HTTP server on port 8778)
+python scripts/play.py --task forge-peg_insert --checkpoint <CHECKPOINT_PATH> \
+  --vla openvla --host localhost --port 8778
+```
+
+> Note: each VLA model must output actions in the task's expected (normalized) action
+> convention. If a model outputs raw metric deltas, motion may look very small after the task's
+> `process_action` scaling — that is a model/units mismatch, not a client-side scale.
+
 - plot data
 python scripts/plot_data.py --task <TASK_NAME> --sim <ISAACLAB_DATA> --real <COLLECTED_DATA> --save_path <FIG_SAVE_PATH>
 
