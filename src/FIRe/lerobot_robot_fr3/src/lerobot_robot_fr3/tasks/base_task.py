@@ -88,7 +88,20 @@ class Task(ABC):
 
     def get_info(self) -> Dict[str, Any]:
         return {}
-    
+
+    # ── control metadata ──────────────────────────────────────────────────────
+    # Defaults preserve the existing task-space behavior (Factory/Forge). Tasks that
+    # drive the robot in a different space (e.g. joint position) override these so
+    # FR3Robot publishes the ActionChunk with the right action_space / arm_action_dim.
+    @property
+    def control_action_space(self) -> str:
+        return "task"
+
+    @property
+    def control_arm_action_dim(self) -> int:
+        return 6
+
+
     @abstractmethod
     def process_action(
         self,

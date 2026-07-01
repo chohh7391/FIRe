@@ -1,6 +1,7 @@
 from .tasks.base_task import Task
 from .tasks.factory import Factory
 from .tasks.forge import Forge
+from .tasks.pick_place import PickPlace
 # from .tasks.my_task import MyTask
 
 
@@ -19,6 +20,9 @@ def create_task(task_name: str) -> Task:
         return Forge(name="gear_mesh")
     elif task_name == "forge-nut_thread":
         return Forge(name="nut_thread")
+    # pick_place
+    elif task_name == "pick_place":
+        return PickPlace(name="pick_place")
     # extras
     # elif task_name == "my_task":
     #     return MyTask(name="my_task")
