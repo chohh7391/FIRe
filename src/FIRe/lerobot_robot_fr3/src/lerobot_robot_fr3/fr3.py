@@ -236,7 +236,12 @@ class FR3Robot(Robot):
 
         processed_arm_action, processed_gripper_action = self.task.process_action(arm_action, gripper_action)
 
-        self.apply_action(processed_arm_action, processed_gripper_action)
+        self.apply_action(
+            processed_arm_action,
+            processed_gripper_action,
+            action_space=self.task.control_action_space,
+            arm_action_dim=self.task.control_arm_action_dim,
+        )
 
         processed_action = {
             "processed_arm_action": processed_arm_action,
@@ -314,12 +319,14 @@ class FR3Robot(Robot):
         *,
         action_space: str | None = None,
         is_relative: bool | None = None,
+        arm_action_dim: int | None = None,
     ) -> None:
         msg = self.wrap_action_to_msg(
             processed_arm_action,
             processed_gripper_action,
             action_space=action_space,
             is_relative=is_relative,
+            arm_action_dim=arm_action_dim,
         )
         # send action chunk message to VLA Action Server
         self.pub_action_chunk.publish(msg)
@@ -425,21 +432,23 @@ class FR3Robot(Robot):
         *,
         action_space: str | None = None,
         is_relative: bool | None = None,
+        arm_action_dim: int | None = None,
     ) -> ActionChunk:
 
         msg_action_space = action_space if action_space is not None else self.config.action_space
         msg_is_relative = is_relative if is_relative is not None else self.config.is_relative
+        msg_arm_action_dim = arm_action_dim if arm_action_dim is not None else self.config.arm_action_dim
 
         if msg_action_space in {"task", "task_space"} and self.config.rotation_type == "quaternion":
             arm_action[3:7] = wxyz2xyzw(arm_action[3:7])
         gripper_action = gripper_action if gripper_action is not None else np.array([])
-        
+
         msg = ActionChunk()
         msg.header = Header(stamp=self.node.get_clock().now().to_msg(), frame_id="base_link")
         msg.action_space = msg_action_space
         msg.relative = msg_is_relative
         msg.rotation_type = self.config.rotation_type
-        msg.chunk_size = len(arm_action) // self.config.arm_action_dim
+        msg.chunk_size = len(arm_action) // msg_arm_action_dim
 
         msg.arm_actions = arm_action.tolist()
         msg.gripper_actions = gripper_action.tolist()

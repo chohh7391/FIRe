@@ -1,0 +1,17 @@
+# Inference config for the pick_place policy.
+#
+# Unlike factory/forge (rl-games), this policy is trained with rsl_rl PPO.
+# fire_core/inference.py branches on `backend` and rebuilds the actor MLP to
+# load the rsl_rl checkpoint's `model_state_dict` (actor.* weights).
+#
+# Architecture must match vla_lab PickPlacePPORunnerCfg.policy
+# (RslRlPpoActorCriticCfg): actor_hidden_dims=[256,128,64], activation="elu",
+# actor_obs_normalization=False.
+backend: rsl_rl
+
+obs_dim: 39
+action_dim: 8
+
+hidden_dims: [256, 128, 64]
+activation: elu
+actor_obs_normalization: false
