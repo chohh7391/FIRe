@@ -519,6 +519,9 @@ def main() -> None:
             recorder=recorder,
         )
     finally:
+        # Playback of episode_length steps is done — tell the VLA it has
+        # finished before we ask the operator whether it was a success.
+        robot.send_success_signal()
         try:
             if logger:
                 logger.save(args.obs_save_path)

@@ -22,6 +22,10 @@ class Task(ABC):
             class_dir = os.path.dirname(os.path.abspath(__file__))
             
         return os.path.join(class_dir, "agents", f"{self.name}.yaml")
+    
+    @property
+    def controls_gripper(self) -> bool:
+        return True
 
     @property
     def robot(self) -> RobotStateManager:
