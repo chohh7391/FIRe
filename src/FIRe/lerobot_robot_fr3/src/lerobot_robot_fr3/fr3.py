@@ -61,6 +61,7 @@ class FR3Robot(Robot):
         self._action_client = None
         self._goal_handle = None
         self._goal_accepted = False
+        self._success_signaled = False
         
         # update robot state & can get robot state from this
         self.robot_state_manager = None
@@ -321,6 +322,9 @@ class FR3Robot(Robot):
         is_relative: bool | None = None,
         arm_action_dim: int | None = None,
     ) -> None:
+        if not self.task.controls_gripper:
+            processed_gripper_action = np.array([], dtype=np.float32)
+            
         msg = self.wrap_action_to_msg(
             processed_arm_action,
             processed_gripper_action,
@@ -330,6 +334,39 @@ class FR3Robot(Robot):
         )
         # send action chunk message to VLA Action Server
         self.pub_action_chunk.publish(msg)
+
+    def send_success_signal(self) -> None:
+        """Tell the VLA Action Server that episode playback has finished.
+
+        Calls the ``/vla/trigger_success`` service. Idempotent per connection:
+        only the first call actually signals, so invoking it right after the
+        control loop (before the success prompt) and again during ``disconnect``
+        is safe.
+        """
+        if self._success_signaled:
+            return
+        if not rclpy.ok() or self.node is None:
+            print(f"[{self.name}] ROS context already down; skipping success signaling.")
+            return
+        try:
+            print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
+            trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')
+            if trigger_client.wait_for_service(timeout_sec=2.0):
+                future = trigger_client.call_async(Trigger.Request())
+                t0 = time.time()
+                while not future.done() and time.time() - t0 < 1.0:
+                    time.sleep(0.1)
+                if future.done():
+                    try:
+                        response = future.result()
+                        print(f"[{self.name}] Trigger Response: {response.success} - {response.message}")
+                    except Exception as e:
+                        print(f"[{self.name}] Failed to get response from Trigger service: {e}")
+            else:
+                print(f"[{self.name}] Warning: /vla/trigger_success service is not available.")
+            self._success_signaled = True
+        except Exception as e:
+            print(f"[{self.name}] ROS success signaling skipped: {e}")
 
     def disconnect(self) -> None:
         if not self._is_connected:
@@ -350,23 +387,10 @@ class FR3Robot(Robot):
         # ROS signaling only while the context is valid. Guarded so a shut-down
         # context can never crash us (which previously caused a segfault).
         if rclpy.ok():
+            # Success signal is idempotent: if record.py already sent it right
+            # after playback (before the success prompt), this is a no-op.
+            self.send_success_signal()
             try:
-                print(f"[{self.name}] Sending Task Success signal to VLA Action Server...")
-                trigger_client = self.node.create_client(Trigger, '/vla/trigger_success')
-                if trigger_client.wait_for_service(timeout_sec=2.0):
-                    future = trigger_client.call_async(Trigger.Request())
-                    t0 = time.time()
-                    while not future.done() and time.time() - t0 < 1.0:
-                        time.sleep(0.1)
-                    if future.done():
-                        try:
-                            response = future.result()
-                            print(f"[{self.name}] Trigger Response: {response.success} - {response.message}")
-                        except Exception as e:
-                            print(f"[{self.name}] Failed to get response from Trigger service: {e}")
-                else:
-                    print(f"[{self.name}] Warning: /vla/trigger_success service is not available.")
-
                 # 제어 안전 종료: 활성화된 Goal이 있다면 Cancel 요청 전송
                 if self._goal_handle is not None and self._goal_accepted:
                     print(f"[{self.name}] Canceling VLA Action goal for safe stop...")

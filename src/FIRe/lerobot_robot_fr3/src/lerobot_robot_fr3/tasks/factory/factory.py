@@ -95,6 +95,10 @@ class Factory(Task):
 
     def get_arm_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
         return action["arm_actions"]
+    
+    @property
+    def controls_gripper(self) -> bool:
+        return False
 
     def get_gripper_action(self, action: Dict[str, np.ndarray]) -> np.ndarray:
         if "gripper_actions" in action:
