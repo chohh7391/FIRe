@@ -2,6 +2,7 @@
 -e ./src/FIRe/lerobot_robot_fr3
 -e ./src/FIRe/lerobot_ft_sensor
 -e ./src/FIRe/fire_core
+-e ./src/FIRe/vision_server
 -e ./src/FIRe/lerobot_teleoperators/lerobot_teleoperator_keyboard
 -e ./src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3
     

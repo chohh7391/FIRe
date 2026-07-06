@@ -3,24 +3,13 @@
 ```bash
 conda create -n fire python=3.10
 conda activate fire
-git clone --recursive https://github.com/chohh7391/FIRe.git
+git clone https://github.com/chohh7391/FIRe.git
 cd FIRe
 pip install -r requirements.txt
 ```
 
-- create another conda env for vision
-```bash
-conda create -n sam3 python=3.12
-conda activate sam3
-pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu128
-pip install -e third_party/sam3
-pip install -e src/FIRe/vision_server
-```
-
-- export hugging face hub token
-```bash
-export HUGGING_FACE_HUB_TOKEN="YOUR_TOKEN"
-```
+The vision (camera) server now runs in the same `fire` env — `requirements.txt` installs
+`src/FIRe/vision_server` (with `pyrealsense2`), so no separate env is needed.
 
 - install ros2 based controller: (https://github.com/chohh7391/cho_robot_project)
 
@@ -34,7 +23,7 @@ ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py vla:=true control_
 
 - vision server
 ```bash
-conda activate sam3
+conda activate fire
 python scripts/run_vision_server.py
 ```
 
@@ -112,7 +101,7 @@ ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py control_mode:=torq
 
 - run vision server
 ```bash
-conda activate sam3
+conda activate fire
 python scripts/run_vision_server.py
 ```
 
