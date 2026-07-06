@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from typing import Dict, Optional, Tuple
 from lerobot_robot_fr3.tasks.base_task import Task
@@ -16,8 +17,36 @@ class Factory(Task):
         self.create_config()
         self.create_buffer()
 
-        self.fixed_pos = np.array([0.6, 0.0, 0.05])
+        # Position of the fixed asset (bolt/hole tip base) expressed in the robot
+        # base frame. In sim this is the (randomized) asset pose; on the real robot
+        # it MUST match where the physical asset actually sits, otherwise both the
+        # `fingertip_pos_rel_fixed` observation and the action anchor
+        # (`fixed_pos_action_frame`) are offset by the same error. Resolved from cfg
+        # and overridable at runtime via FIRE_FIXED_ASSET_POS="x,y,z".
+        self.fixed_pos = self._resolve_fixed_pos()
         self.fixed_quat = np.array([1.0, 0.0, 0.0, 0.0])
+
+    def _resolve_fixed_pos(self) -> np.ndarray:
+        """Resolve the fixed-asset position (robot base frame).
+
+        Priority: FIRE_FIXED_ASSET_POS env var ("x,y,z") > cfg.fixed_asset_pos >
+        the [0.6, 0.0, 0.05] fallback. On the real robot this must be set to the
+        measured asset location for the policy's reference frame to be correct.
+        """
+        default = getattr(self.env_cfg, "fixed_asset_pos", [0.6, 0.0, 0.05])
+        env_val = os.environ.get("FIRE_FIXED_ASSET_POS")
+        if env_val:
+            try:
+                parsed = [float(x) for x in env_val.replace(",", " ").split()]
+            except ValueError:
+                parsed = []
+            if len(parsed) == 3:
+                return np.array(parsed, dtype=np.float32)
+            print(
+                f"[Factory] Ignoring malformed FIRE_FIXED_ASSET_POS={env_val!r}; "
+                "expected 'x,y,z'."
+            )
+        return np.array(default, dtype=np.float32)
 
     def create_config(self) -> None:
         if self.name == "peg_insert":

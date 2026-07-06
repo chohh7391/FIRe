@@ -192,6 +192,9 @@ class NutThread(FactoryTask):
 class FactoryEnvCfg:
     action_space = 6
     observation_space = 19
+    # Fixed-asset position (robot base frame). Override per real-world setup, or at
+    # runtime via the FIRE_FIXED_ASSET_POS env var. See Factory._resolve_fixed_pos.
+    fixed_asset_pos: list = [0.6, 0.0, 0.05]
     obs_order: list = [
         "fingertip_pos_rel_fixed",
         "fingertip_quat",

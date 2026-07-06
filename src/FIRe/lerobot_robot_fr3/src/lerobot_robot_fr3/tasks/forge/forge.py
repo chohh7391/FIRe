@@ -99,9 +99,25 @@ class Forge(Factory):
 
         ft_force = self.compute_ft_force()
 
+        # Match the obs pre-processing done during training in
+        # ForgeEnv._compute_intermediate_values:
+        #   (A) fingertip_quat: the w and z components are forced to 0. The policy
+        #       was trained on the [0, x, y, 0] manifold (yaw is not observed through
+        #       the quaternion), so feeding a raw quaternion is out-of-distribution.
+        #       No renormalization is applied (training does not renormalize either),
+        #       and the sign flip (flip_quats) is a domain randomization that the
+        #       policy is invariant to, so it is omitted here.
+        #   (B) ee_angvel: only the z component is kept (x, y forced to 0).
+        fingertip_quat = self.robot.ee_quat.copy()
+        fingertip_quat[[0, 3]] = 0.0
+
+        ee_angvel = self.robot.ee_angvel.copy()
+        ee_angvel[0:2] = 0.0
+
         obs_dict.update({
             "fingertip_pos_rel_fixed": self.robot.ee_pos - self.fixed_pos_obs_frame,
-            "fingertip_quat": self.robot.ee_quat,
+            "fingertip_quat": fingertip_quat,
+            "ee_angvel": ee_angvel,
             "force_threshold": self.contact_penalty_thresholds,
             "ft_force": ft_force,
             "prev_actions": prev_action,
@@ -223,9 +239,9 @@ class Forge(Factory):
             quat_apply(q_world_from_ft, force_local),
             quat_apply(q_world_from_ft, torque_local),
         ]).astype(np.float32)
-        
+
         # self.force_sensor_world[0:3] -= self.hand_gravity
-        
+
         self.force_sensor_world_smooth = self.alpha * self.force_sensor_world + (1 - self.alpha) * self.force_sensor_world_smooth
         self.force_sensor_smooth = self.force_sensor_world_smooth.copy()
         self.force = self.force_sensor_smooth[0:3]
