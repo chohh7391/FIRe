@@ -115,16 +115,16 @@ ros2 launch cho_task_manager run_task_manager.launch.py task:=forge
 ```bash
 python scripts/play.py \
 --task forge-peg_insert \
---checkpoint /home/home/FIRe/checkpoints/Forge/VLA_RL-BL-forge-peg_insert/nn/Forge.pth
+--checkpoint /home/home/FIRe/checkpoints/FIRe-BL-Forge-PegInsert/nn/Forge.pth
 ```
 
 - record (local checkpoint)
 ```bash
 python scripts/record.py \
 --task forge-peg_insert \
---checkpoint /home/home/FIRe/checkpoints/Forge/VLA_RL-BL-forge-peg_insert/nn/Forge.pth \
+--checkpoint /home/home/FIRe/checkpoints/FIRe-BL-Forge-PegInsert/nn/Forge.pth \
 --vla gr00t \
---lerobot_root /home/home/FIRe/test_data \
+--lerobot_root /home/home/datasets/FIRe/gr00t/peg_insert \
 --lerobot_task "Insert peg into the socket" \
 --last_episode
 ```

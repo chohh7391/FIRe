@@ -85,7 +85,7 @@ def parse_args() -> argparse.Namespace:
         "--vla_chunk_size", type=int, default=None,
         help="Action chunk size. Defaults per backend: gr00t=16, pi05=8, openvla=8.",
     )
-    p.add_argument("--host", type=str, default=None, choices=["localhost", "163.180.160.225"])
+    p.add_argument("--host", type=str, default=None, choices=["localhost", "163.180.160.225", "163.180.164.55"])
     p.add_argument("--port", type=int, default=None)
 
     mode = p.add_mutually_exclusive_group()

@@ -18,8 +18,15 @@ from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
 from lerobot.cameras.realsense import RealSenseCamera, RealSenseCameraConfig
 from lerobot.cameras.configs import ColorMode
 
-logging.basicConfig(level=logging.INFO)
+# lerobot 카메라 임포트가 root 로거를 WARNING으로 먼저 설정하므로,
+# force=True 로 INFO 레벨/핸들러를 강제 재설정한다 (없으면 INFO 로그가 억제됨).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    force=True,
+)
 logger = logging.getLogger("VisionServer")
+logger.setLevel(logging.INFO)
 
 # ===========================================================================
 # 1. 카메라 팩토리 (Camera Factory)
@@ -106,24 +113,55 @@ class VisionServer:
         _, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         return base64.b64encode(buffer).decode("utf-8")
 
+    def _wait_for_frames(self, name, cam, timeout: float = 5.0) -> bool:
+        """카메라 연결 후 실제 프레임(데이터)이 들어오는지 검증한다."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                frame = cam.read_latest(max_age_ms=1000)
+                if frame is not None:
+                    h, w = np.asarray(frame).shape[:2]
+                    logger.info(
+                        f"[DATA OK] Camera '{name}' streaming — frame received ({w}x{h})."
+                    )
+                    return True
+            except Exception:
+                pass
+            time.sleep(0.1)
+        logger.error(
+            f"[NO DATA] Camera '{name}' connected but no frame received within {timeout:.0f}s."
+        )
+        return False
+
     def start(self):
         logger.info("Connecting to all cameras...")
         connected = []
+        failed = []
         for name, cam in self.cameras.items():
             try:
                 cam.connect()
-                connected.append(name)
-                logger.info(f"[OK] Camera '{name}' connected.")
+                logger.info(f"[OK] Camera '{name}' connected. Verifying data stream...")
+                if self._wait_for_frames(name, cam):
+                    connected.append(name)
+                else:
+                    failed.append(name)
+                    with contextlib.suppress(Exception):
+                        cam.disconnect()
             except Exception as e:
+                failed.append(name)
                 logger.error(f"[FAIL] Camera '{name}' failed to connect: {e}")
 
+        # 스트리밍이 확인된 카메라만 유지 (실패 카메라는 캡처 루프에서 제외)
+        for name in failed:
+            self.cameras.pop(name, None)
+
         if not connected:
-            logger.error("No cameras connected. Aborting start.")
+            logger.error("No cameras streaming data. Aborting start.")
             self.stop()
             return
 
         logger.info(
-            f"{len(connected)}/{len(self.cameras)} camera(s) connected: {connected}"
+            f"{len(connected)}/{len(self.cameras)} camera(s) connected & streaming: {connected}"
         )
 
         self._running = True
