@@ -45,7 +45,7 @@ class GR00TRecorder(BaseRecorder):
         return staging_root
 
     def _build_vla_dataset_features(self) -> dict[str, dict]:
-        gr00t_action_names = [f"arm_action_{i}" for i in range(6)] + ["gripper_action"]
+        gr00t_action_names = self._robot.task.vla_action_spec["names"]
         features = {
             "observation.state": vector_feature(self._vla_state_names),
             "action": vector_feature(gr00t_action_names),
@@ -54,15 +54,17 @@ class GR00TRecorder(BaseRecorder):
         return features
 
     def _format_action(self, arm_action: np.ndarray, gripper_action: np.ndarray) -> np.ndarray:
+        arm_dim = self._robot.task.vla_action_spec["arm_dim"]
         arm = np.asarray(arm_action, dtype=np.float32).reshape(-1)
         gripper = np.asarray(gripper_action, dtype=np.float32).reshape(-1)
-        return np.concatenate([arm[:6], gripper[:1]]).astype(np.float32, copy=False)
+        return np.concatenate([arm[:arm_dim], gripper[:1]]).astype(np.float32, copy=False)
 
     def _post_save_processing(self, success: bool) -> None:
         exporter = GR00TExporter(
             task_info=self._task_info,
             fps=self._fps,
             camera_shapes=self.camera_shapes,
+            action_spec=self._robot.task.vla_action_spec,
         )
         exporter.convert_episode(
             Path(self._vla_dataset.root),

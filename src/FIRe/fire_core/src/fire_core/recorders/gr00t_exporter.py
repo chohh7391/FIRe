@@ -19,10 +19,15 @@ class GR00TExporter:
         task_info: dict[str, Any],
         fps: int,
         camera_shapes: dict[str, tuple[int, int, int]],
+        action_spec: dict[str, Any] | None = None,
     ) -> None:
         self._task_info = task_info
         self._fps = fps
         self._camera_shapes = camera_shapes
+        # Task-provided action layout (names/info_names/modality). None only on
+        # the video-only encode_deferred_videos() path, which never rewrites
+        # metadata, so the delta fallbacks below are cosmetic there.
+        self._action_spec = action_spec or {}
 
     def convert_episode(self, root: Path, success: bool, *, keep_images: bool = False) -> None:
         meta_dir = root / "meta"
@@ -219,7 +224,7 @@ class GR00TExporter:
                 "eef_quaternion": {"start": 3, "end": 7, "rotation_type": "quaternion"},
                 "gripper_qpos": {"start": 7, "end": 9},
             },
-            "action": {
+            "action": self._action_spec.get("modality") or {
                 "eef_position_delta": {"start": 0, "end": 3},
                 "eef_rotation_delta": {"start": 3, "end": 6, "rotation_type": "axis_angle"},
                 "gripper_close": {"start": 6, "end": 7},
@@ -235,6 +240,9 @@ class GR00TExporter:
         }
 
     def info(self, total_frames: int, total_episodes: int = 1) -> dict[str, Any]:
+        action_info_names = self._action_spec.get("info_names") or [
+            "dx", "dy", "dz", "drx", "dry", "drz", "gripper_close"
+        ]
         video_info = {
             "video.fps": float(self._fps),
             "video.codec": "h264",
@@ -270,8 +278,8 @@ class GR00TExporter:
             },
             "action": {
                 "dtype": "float64",
-                "shape": [7],
-                "names": ["dx", "dy", "dz", "drx", "dry", "drz", "gripper_close"],
+                "shape": [len(action_info_names)],
+                "names": action_info_names,
             },
             "timestamp": {"dtype": "float64", "shape": [1]},
             "annotation.human.action.task_description": {"dtype": "int64", "shape": [1]},

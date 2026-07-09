@@ -163,6 +163,20 @@ class FR3Robot(Robot):
         self._is_connected = True
         print(f"[{self.name}] VLA Client Connected and Ready!")
 
+    def send_new_vla_goal(self) -> None:
+        """Send a fresh VLA action goal for a new episode on an existing connection.
+
+        VLAActionServer::compute() (cho_controller_franka) marks the goal
+        succeeded and stops reacting to ActionChunk messages once
+        send_success_signal() fires — see `handle_success_trigger()`/`compute()`
+        in vla_action_server.cpp. A new episode therefore needs a brand new
+        accepted goal before any further action has effect; this is a no-op
+        during the very first connect() (handled by _send_vla_goal there).
+        """
+        self._goal_handle = None
+        self._goal_accepted = False
+        self._send_vla_goal()
+
     def _send_vla_goal(self):
         """Action Server에 제어 권한(Goal)을 요청합니다."""
         goal_msg = VisionLanguageAction.Goal()
@@ -335,6 +349,15 @@ class FR3Robot(Robot):
         # send action chunk message to VLA Action Server
         self.pub_action_chunk.publish(msg)
 
+    def reset_success_signal(self) -> None:
+        """Re-arm send_success_signal() for the next episode.
+
+        Needed when a single connection records multiple episodes back to
+        back (continuous teleop sessions) — without this, only the first
+        episode's success signal would ever be sent.
+        """
+        self._success_signaled = False
+
     def send_success_signal(self) -> None:
         """Tell the VLA Action Server that episode playback has finished.
 
@@ -464,6 +487,11 @@ class FR3Robot(Robot):
         msg_arm_action_dim = arm_action_dim if arm_action_dim is not None else self.config.arm_action_dim
 
         if msg_action_space in {"task", "task_space"} and self.config.rotation_type == "quaternion":
+            # Copy first: the caller (e.g. record.py teleop) reuses this same
+            # array to log the action, and the controller expects xyzw on the
+            # wire while the recorded action / state stay wxyz. Mutating in place
+            # would silently store xyzw and break the recorded orientation.
+            arm_action = arm_action.copy()
             arm_action[3:7] = wxyz2xyzw(arm_action[3:7])
         gripper_action = gripper_action if gripper_action is not None else np.array([])
 

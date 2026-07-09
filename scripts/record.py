@@ -121,7 +121,7 @@ def parse_args() -> argparse.Namespace:
     inv3.add_argument(
         "--position_axes",
         type=_parse_axes,
-        default=("-y", "+x", "+z"),
+        default=("-x", "-y", "+z"),
         metavar="ROBOT_X,ROBOT_Y,ROBOT_Z",
         help=(
             "Signed Inverse3 axes used for robot XYZ. Example: "
@@ -197,19 +197,27 @@ def parse_args() -> argparse.Namespace:
 # Shared: recorder factory
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _build_recorder(args: argparse.Namespace, robot: Any) -> Any | None:
+def _build_recorder(
+    args: argparse.Namespace,
+    robot: Any,
+    *,
+    root: str | None = None,
+    resume: bool | None = None,
+) -> Any | None:
     if args.vla is None:
         return None
+    root = args.lerobot_root if root is None else root
+    resume = args.resume if resume is None else resume
     if args.vla == "gr00t":
         from fire_core.recorders import GR00TRecorder
         return GR00TRecorder(
             robot=robot,
             repo_id=args.lerobot_repo_id,
-            root=args.lerobot_root,
+            root=root,
             task=args.task,
             task_text=args.lerobot_task,
             fps=int(round(args.control_hz)),
-            resume=args.resume,
+            resume=resume,
             defer_video_encoding=True,
         )
     if args.vla == "pi05":
@@ -217,7 +225,7 @@ def _build_recorder(args: argparse.Namespace, robot: Any) -> Any | None:
         return PI05Recorder(
             robot=robot,
             repo_id=args.lerobot_repo_id,
-            root=args.lerobot_root,
+            root=root,
             task=args.task,
             task_text=args.lerobot_task,
             fps=int(round(args.control_hz)),
@@ -427,25 +435,74 @@ def main() -> None:
         print("[INFO] Connecting to Inverse3 ...")
         teleop.connect()
 
-        recorder = _build_recorder(args, robot)
+        # Continuous session: keep the robot/Inverse3 connection alive across
+        # episodes so bringup (ROS controller, task_manager, Inverse3 bridge)
+        # only has to happen once. Each loop iteration records one episode
+        # into the same dataset root (first episode honors --resume; every
+        # later episode in the session always appends).
+        session_root: Path | None = None
         encode_root: Path | None = None
         try:
-            run_teleop_loop(
-                robot, teleop, recorder,
-                control_hz=args.control_hz,
-                max_steps=args.episode_length,
-                reanchor_on_enable=not args.absolute_teleop,
-            )
+            while True:
+                resume = args.resume if session_root is None else True
+                root = str(session_root) if session_root is not None else args.lerobot_root
+                recorder = _build_recorder(args, robot, root=root, resume=resume)
+
+                try:
+                    run_teleop_loop(
+                        robot, teleop, recorder,
+                        control_hz=args.control_hz,
+                        max_steps=args.episode_length,
+                        reanchor_on_enable=not args.absolute_teleop,
+                    )
+                finally:
+                    # Episode is done — tell the VLA before we ask the operator
+                    # whether it was a success (mirrors the model-mode ordering).
+                    robot.send_success_signal()
+                    if recorder:
+                        recorder.save()
+                        if session_root is None:
+                            session_root = recorder.output_root
+                        if args.last_episode is not None:
+                            encode_root = recorder.output_root
+
+                again = input("[INFO] Record another episode? (y/n): ").strip().lower()
+                if again != "y":
+                    break
+
+                # Allow the next episode to signal success again
+                # (send_success_signal() is otherwise idempotent per connection).
+                robot.reset_success_signal()
+
+                # The VLA action goal ends (succeeded) the instant the previous
+                # send_success_signal() lands — the controller then ignores all
+                # ActionChunk messages until a new goal is accepted. Re-arm it
+                # now so the robot actually moves once teleop resumes. Requires
+                # task_manager to have re-activated the VLA controller by now.
+                print("[INFO] Requesting a new VLA goal for the next episode ...")
+                while True:
+                    try:
+                        robot.send_new_vla_goal()
+                        break
+                    except ConnectionError as e:
+                        input(
+                            f"[WARN] {e} Make sure task_manager has re-launched and "
+                            "activated the VLA controller, then press Enter to retry."
+                        )
+
+                # Debounce: don't let a still-held end_episode button instantly
+                # end the next episode too.
+                while bool(teleop.get_action()["inv3.end_episode"].item()):
+                    time.sleep(0.05)
+
+                print("[INFO] Reposition and press the calibration button to start the next episode.")
+                teleop.calibrate()
+        except KeyboardInterrupt:
+            print("\n[INFO] Session stopped by user.")
         finally:
-            try:
-                if recorder:
-                    recorder.save()
-                    if args.last_episode is not None:
-                        encode_root = recorder.output_root
-            finally:
-                teleop.disconnect()
-                robot.disconnect()
-                print("[INFO] Disconnected.")
+            teleop.disconnect()
+            robot.disconnect()
+            print("[INFO] Disconnected.")
 
         if encode_root is not None:
             encode_deferred_videos(args, root=encode_root)

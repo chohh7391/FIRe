@@ -105,6 +105,35 @@ class Task(ABC):
     def control_arm_action_dim(self) -> int:
         return 6
 
+    @property
+    def vla_action_spec(self) -> Dict[str, Any]:
+        """GR00T ``action`` layout used when recording a VLA dataset.
+
+        Default: 6-dim relative EE delta (position delta + axis-angle rotation
+        delta) + gripper — the RL/relative task-space action used by Factory
+        and Forge. Tasks whose recorded action is an absolute EE pose (e.g.
+        Inverse3 teleop for pick_place, which bypasses process_action() and
+        sends absolute task-space poses) override this so the stored action and
+        the modality.json GR00T trains on match what was actually sent to the
+        robot.
+
+        Keys:
+          - ``arm_dim``: number of arm action components stored (before gripper)
+          - ``names``: LeRobot parquet column names for the ``action`` vector
+          - ``info_names``: human-readable per-component names for info.json
+          - ``modality``: GR00T modality.json ``action`` sub-dict
+        """
+        return {
+            "arm_dim": 6,
+            "names": [f"arm_action_{i}" for i in range(6)] + ["gripper_action"],
+            "info_names": ["dx", "dy", "dz", "drx", "dry", "drz", "gripper_close"],
+            "modality": {
+                "eef_position_delta": {"start": 0, "end": 3},
+                "eef_rotation_delta": {"start": 3, "end": 6, "rotation_type": "axis_angle"},
+                "gripper_close": {"start": 6, "end": 7},
+            },
+        }
+
 
     @abstractmethod
     def process_action(

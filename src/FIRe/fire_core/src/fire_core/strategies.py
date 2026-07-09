@@ -39,6 +39,11 @@ class StepResult:
 class ControlStrategy(ABC):
     """Isaac Lab DirectRLEnv와 동일한 action-first 스텝 순서를 구현하는 전략."""
 
+    # True인 전략은 arm_actions를 상대 delta가 아니라 절대 task-space pose
+    # (pos+quat)로 내보낸다. run_control_loop이 이런 전략은 process_action을
+    # 건너뛰고 teleop과 동일한 절대 pose 경로로 로봇에 전송한다.
+    sends_task_space_pose: bool = False
+
     @abstractmethod
     def reset(self) -> dict: ...
 
@@ -296,6 +301,115 @@ class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Live inference — VLA only (no RL policy)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class VLAOnlyStrategy(ControlStrategy):
+    """Action driven purely by a VLA server chunk — no RL policy.
+
+    Supports both action conventions, auto-detected from the server's returned
+    keys (``sends_task_space_pose`` is set accordingly in _build_vla_chunk):
+
+      - Absolute EE pose (gr00t pick_place): ``action.eef_position`` +
+        ``action.eef_quaternion`` → 7-dim ``[pos(3), quat(4)]`` sent through the
+        absolute task-space path, exactly as Inverse3 teleop commanded during
+        recording (process_action() bypassed — no delta scaling/EMA).
+      - Relative EE delta (pi05 / openvla): ``action.eef_position_delta`` +
+        ``action.eef_rotation_delta`` → 6-dim sent through process_action(),
+        which turns it into an absolute EE pose target.
+    """
+
+    def __init__(
+        self,
+        robot,
+        action_features: Features,
+        *,
+        vla_policy,
+        vla_chunk_size: int = 16,
+    ):
+        self._robot = robot
+        self._action_features = action_features
+        self._vla = vla_policy
+        self._chunk_size = int(vla_chunk_size)
+        self._vla_chunk: Optional[np.ndarray] = None
+        self._vla_gripper_chunk: Optional[np.ndarray] = None
+        self._vla_requested = False
+        self._buffered_action: dict = {"arm_actions": np.zeros(7, dtype=np.float32)}
+
+    def _build_vla_chunk(self, raw_actions: dict) -> np.ndarray:
+        if "action.eef_position" in raw_actions:
+            # Absolute EE pose (gr00t pick_place): [pos(3), quat(4)] per row,
+            # sent through the absolute task-space path (no process_action).
+            self.sends_task_space_pose = True
+            pos = np.asarray(raw_actions["action.eef_position"], dtype=np.float32)
+            quat = np.asarray(raw_actions["action.eef_quaternion"], dtype=np.float32)
+            if pos.ndim == 3: pos = pos.squeeze(0)
+            if quat.ndim == 3: quat = quat.squeeze(0)
+            # Model output is not guaranteed unit-norm; renormalize per row so
+            # the controller receives valid quaternions.
+            norms = np.clip(np.linalg.norm(quat, axis=-1, keepdims=True), 1e-8, None)
+            quat = quat / norms
+            return np.concatenate([pos, quat], axis=-1)
+        # Relative EE delta (pi05 / openvla): [pos_delta(3), rot_delta(3)] per
+        # row, turned into an absolute pose by task.process_action().
+        self.sends_task_space_pose = False
+        pos = np.asarray(raw_actions["action.eef_position_delta"], dtype=np.float32)
+        rot = np.asarray(raw_actions["action.eef_rotation_delta"], dtype=np.float32)
+        if pos.ndim == 3: pos = pos.squeeze(0)
+        if rot.ndim == 3: rot = rot.squeeze(0)
+        return np.concatenate([pos, rot], axis=-1)
+
+    def _set_vla_chunk(self, raw_actions: dict) -> None:
+        chunk = self._build_vla_chunk(raw_actions)
+        # Align the replan cadence to the VLA's actual action horizon so we never
+        # index past the returned chunk. Different backends return different
+        # horizons (gr00t=16, pi05=10, ...); cap by the user-requested size.
+        horizon = int(chunk.shape[0])
+        effective = min(self._chunk_size, horizon) if horizon > 0 else self._chunk_size
+        self._chunk_size = max(1, effective)
+        self._vla_chunk = chunk[: self._chunk_size]
+        self._vla_gripper_chunk = _extract_gripper_chunk(raw_actions)
+
+    def reset(self) -> dict:
+        obs_dict = self._robot.get_observation()
+        vla_obs = wait_for_ready_vla_observation(self._robot)
+        raw = self._vla.get_action_sync(vla_obs)
+        self._set_vla_chunk(raw)
+        self._vla_requested = False
+        return obs_dict
+
+    def step(self, step_idx: int) -> Optional[StepResult]:
+        chunk_idx = step_idx % self._chunk_size
+
+        if chunk_idx == 0 and step_idx != 0 and self._vla_requested:
+            try:
+                self._set_vla_chunk(self._vla.get_result())
+            except Exception as e:
+                print(f"[WARN] VLA get_result failed: {e}, reusing previous chunk.")
+            self._vla_requested = False
+
+        if chunk_idx == self._chunk_size // 2 and not self._vla_requested:
+            try:
+                self._vla.request_action(get_ready_vla_observation(self._robot))
+                self._vla_requested = True
+            except VLAObservationNotReady as e:
+                print(f"[WARN] VLA request skipped: {e}")
+
+        action = self._vla_chunk[chunk_idx].astype(np.float32)
+        self._buffered_action = {"arm_actions": action}
+        if self._vla_gripper_chunk is not None:
+            self._buffered_action["gripper_actions"] = _chunk_row(
+                self._vla_gripper_chunk,
+                chunk_idx,
+            )
+        return StepResult(
+            obs_dict=self._robot.get_observation(),
+            action_dict=self._buffered_action,
+            policy_action=action,
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Replay — raw (CSV obs → inference)
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -421,6 +535,8 @@ class ReplayRawStrategy(ControlStrategy):
 
 class ReplayPoseStrategy(ControlStrategy):
     """Replay --pose: CSV target pose를 직접 action으로 전송 (inference 없음)."""
+
+    sends_task_space_pose = True
 
     def __init__(self, replay_data: pd.DataFrame, pose_cols: List[str], action_dim: int):
         self._data = replay_data

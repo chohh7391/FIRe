@@ -52,6 +52,7 @@ from fire_core.inference import start_inference_process
 from fire_core.strategies import (
     LiveInferenceStrategy,
     LiveInferenceWithVLAStrategy,
+    VLAOnlyStrategy,
     ReplayRawStrategy,
     ReplayPoseStrategy,
 )
@@ -66,7 +67,7 @@ from fire_core.loop import run_control_loop
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--task",           default="peg_insert")
-    checkpoint_group = p.add_mutually_exclusive_group(required=True)
+    checkpoint_group = p.add_mutually_exclusive_group()
     checkpoint_group.add_argument("--checkpoint", help="Local checkpoint path.")
     checkpoint_group.add_argument(
         "--hf_checkpoint",
@@ -97,6 +98,16 @@ def parse_args() -> argparse.Namespace:
         p.error("--raw / --pose requires --replay")
     if args.replay and not (args.raw or args.pose):
         p.error("--replay requires --raw or --pose")
+
+    no_ckpt = args.checkpoint is None and args.hf_checkpoint is None
+    if no_ckpt:
+        if args.raw:
+            p.error("--raw replay requires --checkpoint or --hf_checkpoint.")
+        if not args.replay and args.vla is None:
+            p.error(
+                "Provide --checkpoint/--hf_checkpoint for an RL (or RL+VLA) run, "
+                "or --vla alone for a VLA-only run with no RL policy."
+            )
     return args
 
 
@@ -113,11 +124,13 @@ def main() -> None:
     )
 
     args = parse_args()
-    checkpoint_path = resolve_checkpoint_path(
-        checkpoint=args.checkpoint,
-        hf_checkpoint=args.hf_checkpoint,
-    )
-    needs_inference = not (args.replay and args.pose)
+    checkpoint_path = None
+    if args.checkpoint or args.hf_checkpoint:
+        checkpoint_path = resolve_checkpoint_path(
+            checkpoint=args.checkpoint,
+            hf_checkpoint=args.hf_checkpoint,
+        )
+    needs_inference = checkpoint_path is not None and not (args.replay and args.pose)
 
     # ── Robot 객체 (connect 전에 task features 접근) ───────────────────────────
     config = FR3RobotConfig(
@@ -227,10 +240,17 @@ def main() -> None:
         )
     elif args.replay and args.pose:
         strategy = ReplayPoseStrategy(replay_data, pose_cols, action_dim)
-    elif vla_policy is not None:
+    elif vla_policy is not None and checkpoint_path is not None:
         strategy = LiveInferenceWithVLAStrategy(
             robot, obs_buf, obs_features,
             obs_flag, action_flag, action_shm, action_dim,
+            vla_policy=vla_policy,
+            vla_chunk_size=args.vla_chunk_size,
+        )
+    elif vla_policy is not None:
+        # No RL checkpoint: drive the robot purely off the VLA server's chunk.
+        strategy = VLAOnlyStrategy(
+            robot, action_features,
             vla_policy=vla_policy,
             vla_chunk_size=args.vla_chunk_size,
         )
