@@ -62,6 +62,36 @@ python scripts/play.py --task forge-peg_insert --checkpoint <CHECKPOINT_PATH> \
 > convention. If a model outputs raw metric deltas, motion may look very small after the task's
 > `process_action` scaling — that is a model/units mismatch, not a client-side scale.
 
+## Play a VLA model only (no RL checkpoint)
+
+Drive the robot purely from the VLA server's action chunk — no RL policy. Pass `--vla` **without**
+`--checkpoint`/`--hf_checkpoint` (e.g. the teleop-collected `pick_place` task). The task's action
+convention decides how the chunk is applied:
+
+- Absolute EE-pose tasks (e.g. `pick_place`): the server returns `eef_position` + `eef_quaternion`,
+  sent to the robot as an absolute task-space pose (no `process_action` delta scaling).
+- Relative-delta tasks: the server returns `eef_position_delta` + `eef_rotation_delta`, turned into
+  an absolute pose by the task's `process_action`.
+
+Prerequisites (each in its own sourced terminal): robot/controller bringup, vision server, task
+manager for the task, and the GR00T inference server (`--host`/`--port` below point to it).
+
+```bash
+conda activate fire
+source ~/ros2_ws/install/setup.bash
+cd /home/home/FIRe
+
+python scripts/play.py \
+--task pick_place \
+--vla gr00t \
+--host 163.180.160.225 --port 7777 \
+--use_cameras \
+--episode_length 384
+```
+
+`--use_cameras` is required (the VLA server needs the camera views). Swap `--vla`/`--host`/`--port`
+for `pi05` or `openvla` as in the table above.
+
 - plot data
 python scripts/plot_data.py --task <TASK_NAME> --sim <ISAACLAB_DATA> --real <COLLECTED_DATA> --save_path <FIG_SAVE_PATH>
 
