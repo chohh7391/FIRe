@@ -6,7 +6,7 @@ import numpy as np
 
 from fire_core.strategies import ControlStrategy
 from fire_core.logger import StepLogger
-# BaseRecorder가 위치한 정확한 경로로 import를 맞춰주세요.
+# Adjust the import to the exact path where BaseRecorder is located.
 from fire_core.recorders.base_recorder import BaseRecorder
 
 
@@ -33,30 +33,30 @@ def run_control_loop(
 
             t_start = time.time()
 
-            # 1. 전략(Strategy)을 통해 다음 액션 계산
+            # 1. Compute the next action via the Strategy
             result = strategy.step(step_idx)
             if result is None:
                 break
 
-            # 2. 로봇에게 액션 전달
-            #    절대 task-space pose를 내보내는 전략(teleop replay, VLA-only)은
-            #    process_action(상대 delta 변환)을 건너뛰고 teleop과 동일한
-            #    절대 pose 경로로 전송한다.
+            # 2. Send the action to the robot
+            #    Strategies that emit absolute task-space poses (teleop replay,
+            #    VLA-only) skip process_action (relative delta conversion) and
+            #    send via the same absolute-pose path used by teleop.
             if getattr(strategy, "sends_task_space_pose", False):
                 if result.action_dict:
                     result.processed_action = robot.send_processed_action(result.action_dict)
             else:
                 result.processed_action = robot.send_action(result.action_dict)
 
-            # 3. CSV 등 기존 Logger 기록
+            # 3. Record via the existing Logger (e.g. CSV)
             if logger is not None:
                 logger.record(result)
 
-            # 4. LeRobot/GR00T/Pi0 데이터셋 기록 (핵심 부분)
+            # 4. Record the LeRobot/GR00T/Pi0 dataset (core part)
             if recorder is not None:                
                 arm_action = result.policy_action
 
-                # 그리퍼 액션 추출 (로봇 태스크 인터페이스 활용)
+                # Extract the gripper action (using the robot task interface)
                 gripper_action = robot.task.get_gripper_action(result.action_dict)
 
                 recorder.record(
@@ -64,10 +64,10 @@ def run_control_loop(
                     gripper_action=gripper_action,
                 )
 
-            # 5. 후처리 작업
+            # 5. Post-processing
             result = strategy.after_action_sent(step_idx, result)
 
-            # 6. 주파수(Hz) 동기화
+            # 6. Frequency (Hz) synchronization
             sleep_t = dt - (time.time() - t_start)
             if sleep_t > 0:
                 time.sleep(sleep_t)

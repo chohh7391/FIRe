@@ -1,4 +1,4 @@
-# 1. 하위 로봇 제어 모듈을 Editable로 설치
+# 1. Install the lower-level robot control modules as editable
 -e ./src/FIRe/lerobot_robot_fr3
 -e ./src/FIRe/lerobot_ft_sensor
 -e ./src/FIRe/fire_core
@@ -6,5 +6,5 @@
 -e ./src/FIRe/lerobot_teleoperators/lerobot_teleoperator_keyboard
 -e ./src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3
     
-# 2. 최상위 프레임워크를 Editable로 설치
+# 2. Install the top-level framework as editable
 -e .

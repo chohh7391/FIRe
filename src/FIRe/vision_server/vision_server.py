@@ -12,14 +12,14 @@ import contextlib
 import argparse
 
 # ---------------------------------------------------------------------------
-# LeRobot 카메라 임포트
+# LeRobot camera imports
 # ---------------------------------------------------------------------------
 from lerobot.cameras.opencv import OpenCVCamera, OpenCVCameraConfig
 from lerobot.cameras.realsense import RealSenseCamera, RealSenseCameraConfig
 from lerobot.cameras.configs import ColorMode
 
-# lerobot 카메라 임포트가 root 로거를 WARNING으로 먼저 설정하므로,
-# force=True 로 INFO 레벨/핸들러를 강제 재설정한다 (없으면 INFO 로그가 억제됨).
+# The lerobot camera imports set the root logger to WARNING first, so use
+# force=True to forcibly reconfigure the INFO level/handler (otherwise INFO logs are suppressed).
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -29,7 +29,7 @@ logger = logging.getLogger("VisionServer")
 logger.setLevel(logging.INFO)
 
 # ===========================================================================
-# 1. 카메라 팩토리 (Camera Factory)
+# 1. Camera Factory
 # ===========================================================================
 def get_webcam_path_by_id(serial_id: str):
     base_dir = "/dev/v4l/by-id/"
@@ -56,7 +56,7 @@ def create_camera(serial_id: str, width: int = 640, height: int = 480, fps: int 
 
 
 # ===========================================================================
-# 2. Vision Server 클래스
+# 2. Vision Server class
 # ===========================================================================
 class VisionServer:
     def __init__(
@@ -71,18 +71,18 @@ class VisionServer:
         self.height_size = height_size
         self.cameras = {}
 
-        # 팩토리를 이용한 카메라 초기화
+        # Initialize cameras using the factory
         for name, serial in camera_configs.items():
             self.cameras[name] = create_camera(serial)
 
-        # ZMQ PUB 소켓 설정
+        # Configure the ZMQ PUB socket
         self.context = zmq.Context()
         self.socket = self.context.socket(zmq.PUB)
         self.socket.setsockopt(zmq.SNDHWM, 20)
         self.socket.setsockopt(zmq.LINGER, 0)
         self.socket.bind(f"tcp://*:{port}")
 
-        # 캡처-발행 파이프라인 큐 (maxsize=1: 항상 최신 프레임만 유지)
+        # Capture-publish pipeline queue (maxsize=1: always keep only the latest frame)
         self._raw_queue: queue.Queue = queue.Queue(maxsize=1)
         self._running = False
         self._capture_thread = None
@@ -109,12 +109,12 @@ class VisionServer:
 
     @staticmethod
     def _encode_image(image: np.ndarray, quality: int = 85) -> str:
-        """RGB 이미지를 Base64 JPEG 문자열로 인코딩 (색상 변환 없음, LeRobot 호환)"""
+        """Encode an RGB image as a Base64 JPEG string (no color conversion, LeRobot-compatible)."""
         _, buffer = cv2.imencode(".jpg", image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
         return base64.b64encode(buffer).decode("utf-8")
 
     def _wait_for_frames(self, name, cam, timeout: float = 5.0) -> bool:
-        """카메라 연결 후 실제 프레임(데이터)이 들어오는지 검증한다."""
+        """Verify that actual frames (data) arrive after the camera connects."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
@@ -151,7 +151,7 @@ class VisionServer:
                 failed.append(name)
                 logger.error(f"[FAIL] Camera '{name}' failed to connect: {e}")
 
-        # 스트리밍이 확인된 카메라만 유지 (실패 카메라는 캡처 루프에서 제외)
+        # Keep only cameras confirmed to be streaming (failed cameras are excluded from the capture loop)
         for name in failed:
             self.cameras.pop(name, None)
 
@@ -185,7 +185,7 @@ class VisionServer:
             self.stop()
 
     def _capture_loop(self):
-        """카메라 프레임을 지속적으로 캡처해 큐에 넣는 스레드."""
+        """Thread that continuously captures camera frames and puts them into the queue."""
         while self._running:
             try:
                 raw_frames = {}
@@ -199,7 +199,7 @@ class VisionServer:
                     time.sleep(0.01)
                     continue
 
-                # 큐가 꽉 찼으면 낡은 프레임 버리고 최신 프레임으로 교체
+                # If the queue is full, drop the stale frame and replace it with the latest one
                 if self._raw_queue.full():
                     try:
                         self._raw_queue.get_nowait()
@@ -210,7 +210,7 @@ class VisionServer:
                 logger.error(f"Capture error: {e}")
 
     def _publish_loop(self):
-        """큐에서 프레임을 꺼내 ZMQ로 전송하는 스레드."""
+        """Thread that pulls frames from the queue and sends them over ZMQ."""
         while self._running:
             try:
                 raw_frames = self._raw_queue.get(timeout=1.0)
@@ -230,7 +230,7 @@ class VisionServer:
                     with contextlib.suppress(zmq.Again):
                         self.socket.send_string(json.dumps(message), zmq.NOBLOCK)
 
-                # 발행 속도 제한 (최대 30Hz)
+                # Limit the publish rate (max 30Hz)
                 elapsed = time.perf_counter() - t0
                 sleep_time = max(0, (1.0 / 30.0) - elapsed)
                 if sleep_time > 0:

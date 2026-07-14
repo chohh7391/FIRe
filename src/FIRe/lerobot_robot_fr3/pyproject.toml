@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "FR3 VLA Robot plugin for LeRobot using ROS 2"
 requires-python = ">=3.10"
 dependencies = [
-    # ROS 2 (rclpy)는 시스템에 설치된 것을 사용하므로 여기에 적지 않습니다.
+    # ROS 2 (rclpy) uses the system-installed version, so it is not listed here.
     "lerobot==0.4.4",
     # "numpy<2.0.0",
     "scipy",

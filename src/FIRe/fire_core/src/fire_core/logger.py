@@ -12,7 +12,7 @@ from fire_core.strategies import StepResult
 
 
 class StepLogger:
-    """매 step의 StepResult를 기록하고 CSV로 저장."""
+    """Record the StepResult of every step and save it to CSV."""
 
     def __init__(self, robot, obs_features: Features, log_features: Features):
         self._robot = robot

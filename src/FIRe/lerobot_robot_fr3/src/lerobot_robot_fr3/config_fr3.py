@@ -13,17 +13,17 @@ class FR3RobotConfig(RobotConfig):
     
     ros_domain_id: int = 0
     
-    # --- ROS 2 토픽 및 액션 서버 이름 ---
+    # --- ROS 2 topics and action server names ---
     observation_topic: str = "/vla/observation/ee_pose"
     action_topic: str = "/vla/action/ee_pose"
     vla_action_server: str = "/controller_action_server/vla_controller"
     
-    # --- VLA Action Goal 설정 ---
+    # --- VLA Action Goal settings ---
     model_name: str = "lerobot_vla_policy"
     inference_frequency: float = 15.0
     
-    # --- VLA Chunk 설정 ---
-    action_space: str = "task"    # Task space 제어
+    # --- VLA Chunk settings ---
+    action_space: str = "task"    # Task space control
     is_relative: bool = False
     rotation_type: str = "axis_angle"  # "axis_angle", "euler", "quaternion", "rotation6d"
     arm_action_dim: int = 6

@@ -132,7 +132,7 @@ def main() -> None:
         )
     needs_inference = checkpoint_path is not None and not (args.replay and args.pose)
 
-    # ── Robot 객체 (connect 전에 task features 접근) ───────────────────────────
+    # ── Robot object (access task features before connect) ───────────────────────────
     config = FR3RobotConfig(
         use_sim_time=args.use_sim_time,
         is_relative=False,
@@ -204,7 +204,7 @@ def main() -> None:
             infer_handle.shutdown()
         return
 
-    # ── CSV 로드 & 컬럼 검증 ──────────────────────────────────────────────────
+    # ── CSV load & column validation ──────────────────────────────────────────────────
     replay_data: Optional[pd.DataFrame] = None
     pose_cols: List[str] = []
 
@@ -229,7 +229,7 @@ def main() -> None:
             robot.disconnect()
             return
 
-    # ── Strategy 선택 ─────────────────────────────────────────────────────────
+    # ── Strategy selection ─────────────────────────────────────────────────────────
     obs_buf = obs_shm.numpy()[0]
 
     if args.replay and args.raw:

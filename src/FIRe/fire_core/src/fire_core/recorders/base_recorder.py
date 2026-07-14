@@ -37,7 +37,7 @@ def _camera_shapes(robot) -> dict[str, tuple[int, int, int]]:
 
 
 class BaseRecorder(ABC):
-    """공통 LeRobot 데이터셋 기록을 담당하는 기본 레코더 클래스입니다."""
+    """Base recorder class responsible for common LeRobot dataset recording."""
 
     def __init__(
         self,
@@ -73,7 +73,7 @@ class BaseRecorder(ABC):
         self._encoder_threads = encoder_threads
         self._batch_encoding_size = batch_encoding_size
         
-        # 설정 변수 저장 (자식 클래스에서 접근 가능하도록)
+        # Store configuration variables (so child classes can access them)
         self.camera_shapes = _camera_shapes(robot)
         self._image_dtype = "video" if use_videos else "image"
         
@@ -83,7 +83,7 @@ class BaseRecorder(ABC):
         self._rl_state_names = flat_feature_names("", self._obs_features)
         self._log_state_names = flat_feature_names("log_", self._log_features)
         
-        # VLA 공통 상태 이름 (모델별로 다를 경우 하위 클래스에서 오버라이드)
+        # Common VLA state names (override in subclasses if they differ per model)
         self._vla_state_names = [
             "eef_position_0", "eef_position_1", "eef_position_2",
             "eef_quaternion_0", "eef_quaternion_1", "eef_quaternion_2", "eef_quaternion_3",
@@ -91,7 +91,7 @@ class BaseRecorder(ABC):
         ]
 
         self._dataset_root = self._resolve_root(root, repo_id, resume)
-        # 만약 repo_id가 없으면 폴더 이름을 repo_id로 사용 (LeRobotDataset 필수 인자 대응)
+        # If there is no repo_id, use the folder name as repo_id (to satisfy LeRobotDataset's required argument)
         self._repo_id = repo_id or self._dataset_root.name
         self._recording_root = self._resolve_recording_root(self._dataset_root, resume)
 
@@ -101,7 +101,7 @@ class BaseRecorder(ABC):
             features=self._build_vla_dataset_features(),
         )
 
-    # ── [공통 헬퍼 메서드들: _resolve_root, _create_dataset 등 기존과 동일] ──
+    # ── [Common helper methods: _resolve_root, _create_dataset, etc. same as before] ──
     @property
     def output_root(self) -> Path:
         return self._dataset_root
@@ -113,7 +113,7 @@ class BaseRecorder(ABC):
             safe_repo_name = repo_id.replace("/", "_")
             path = Path("outputs/datasets") / safe_repo_name
         else:
-            # 둘 다 없으면 기본 날짜 폴더 사용
+            # If neither is provided, use a default date-based folder
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             path = Path("outputs/datasets") / f"dataset_{timestamp}"
 
@@ -239,7 +239,7 @@ class BaseRecorder(ABC):
         self._vla_dataset.save_episode()
         self._vla_dataset.finalize()
         
-        # 모델별 후처리 로직 실행
+        # Run model-specific post-processing logic
         self._post_save_processing(success)
         
         print(f"[INFO] Saved {self._frames} VLA frames to dataset: {self._vla_dataset.root}")

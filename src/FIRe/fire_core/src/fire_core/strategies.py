@@ -37,11 +37,12 @@ class StepResult:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ControlStrategy(ABC):
-    """Isaac Lab DirectRLEnv와 동일한 action-first 스텝 순서를 구현하는 전략."""
+    """Strategy implementing the same action-first step order as Isaac Lab's DirectRLEnv."""
 
-    # True인 전략은 arm_actions를 상대 delta가 아니라 절대 task-space pose
-    # (pos+quat)로 내보낸다. run_control_loop이 이런 전략은 process_action을
-    # 건너뛰고 teleop과 동일한 절대 pose 경로로 로봇에 전송한다.
+    # Strategies with this set to True emit arm_actions as absolute task-space
+    # poses (pos+quat) rather than relative deltas. run_control_loop lets such
+    # strategies skip process_action and send them to the robot via the same
+    # absolute-pose path used by teleop.
     sends_task_space_pose: bool = False
 
     @abstractmethod
@@ -131,11 +132,12 @@ def _chunk_row(chunk: np.ndarray, chunk_idx: int) -> np.ndarray:
 
 
 def _spin_wait_inference(action_flag: RawValue, action_shm: torch.Tensor, action_dim: int) -> np.ndarray:
-    """action_flag가 1이 될 때까지 pure spin-wait.
+    """Pure spin-wait until action_flag becomes 1.
 
-    NOTE: time.sleep() 절대 사용 금지.
-          Linux sleep 해상도(1-4ms)로 인해 inference가 이미 완료됐어도
-          수ms 추가 대기가 붙어 제어 주기가 무너진다.
+    NOTE: Never use time.sleep().
+          Linux's sleep resolution (1-4ms) adds several milliseconds of extra
+          waiting even when inference has already finished, breaking the
+          control cycle.
     """
     while action_flag.value == 0:
         pass
@@ -148,7 +150,7 @@ def _spin_wait_inference(action_flag: RawValue, action_shm: torch.Tensor, action
 # ──────────────────────────────────────────────────────────────────────────────
 
 class LiveInferenceStrategy(ControlStrategy):
-    """실시간: action apply → obs 수집 → inference (Isaac Lab 순서)."""
+    """Real-time: apply action -> collect obs -> inference (Isaac Lab order)."""
 
     def __init__(
         self,
@@ -209,7 +211,7 @@ class LiveInferenceStrategy(ControlStrategy):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class LiveInferenceWithVLAStrategy(LiveInferenceStrategy):
-    """RL action에 VLA chunk를 합산하는 전략."""
+    """Strategy that adds the VLA chunk on top of the RL action."""
 
     def __init__(
         self,
@@ -413,7 +415,7 @@ class VLAOnlyStrategy(ControlStrategy):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ReplayRawStrategy(ControlStrategy):
-    """Replay --raw: CSV obs → inference → action, live robot obs로 로깅."""
+    """Replay --raw: CSV obs -> inference -> action, logging live robot obs."""
 
     def __init__(
         self,
@@ -533,7 +535,7 @@ class ReplayRawStrategy(ControlStrategy):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ReplayPoseStrategy(ControlStrategy):
-    """Replay --pose: CSV target pose를 직접 action으로 전송 (inference 없음)."""
+    """Replay --pose: send CSV target pose directly as the action (no inference)."""
 
     sends_task_space_pose = True
 

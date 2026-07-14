@@ -13,7 +13,7 @@ pip install -r requirements.txt
 > installs editable, so clone with `--recurse-submodules` — or, in an existing clone, run
 > `git submodule update --init --recursive` **before** `pip install -r requirements.txt`.
 > Its C++ bridge additionally needs the proprietary Haply SDK built separately; see the
-> submodule's `SETUP.md` and [docs/inverse3_setup.md](docs/inverse3_setup.md).
+> submodule's [`SETUP.md`](src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3/SETUP.md).
 
 The vision (camera) server now runs in the same `fire` env — `requirements.txt` installs
 `src/FIRe/vision_server` (with `pyrealsense2`), so no separate env is needed.
@@ -234,20 +234,20 @@ python scripts/plot/plot_gr00t_dataset.py \
 
 # Inverse3 Haptic Teleop
 
-Haption Inverse3 + VerseGrip로 demonstration을 직접 수집한다.
-최초 세팅(빌드 / udev 시리얼 포트 설정 / 문제 해결)은 [docs/inverse3_setup.md](docs/inverse3_setup.md) 참고.
-상세 아키텍처 및 운용 매뉴얼은 [docs/inverse3_teleoperator.md](docs/inverse3_teleoperator.md) 참고.
+Collect demonstrations directly with the Haption Inverse3 + VerseGrip.
+For initial setup (build / udev serial port configuration / troubleshooting), see the submodule's [SETUP.md](src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3/SETUP.md).
+For the detailed architecture and operation manual, see [docs/inverse3_teleoperator.md](docs/inverse3_teleoperator.md).
 
 ## Install
 
 ```bash
-# C++ bridge server 빌드 (최초 1회)
+# Build the C++ bridge server (one-time)
 cd src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3/\
 src/lerobot_teleoperator_inverse3/inverse3_bridge
 make
 cd /home/home/FIRe
 
-# Python 패키지 설치
+# Install the Python package
 conda activate fire
 pip install -e src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3
 ```
@@ -273,13 +273,13 @@ python scripts/record.py \
 
 Add `--resume` to append another episode to the same dataset root.
 
-**동작 방법:**
-- VerseGrip의 enable button(기본 bit-0)을 **누른 상태**에서 로봇이 따라온다.
-- 버튼을 **처음 누른 순간** Inverse3 현재 위치와 로봇 현재 위치가 자동으로 매칭된다 (점프 없음).
-- 버튼을 놓으면 일시 정지. 다시 누르면 현재 위치에서 새로 시작.
-- `Ctrl+C`로 녹화 중단 → 성공 여부 입력 후 저장.
+**How it works:**
+- The robot follows only while the VerseGrip's enable button (bit-0 by default) is **held down**.
+- **The instant the button is first pressed**, the Inverse3's current position is automatically matched to the robot's current position (no jump).
+- Releasing the button pauses motion; pressing it again restarts from the current position.
+- Stop recording with `Ctrl+C` → enter whether the episode succeeded, then save.
 
-## Mock test (기기 없이 동작 확인)
+## Mock test (verify operation without hardware)
 
 ```bash
 python src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3/test_teleop_mock.py

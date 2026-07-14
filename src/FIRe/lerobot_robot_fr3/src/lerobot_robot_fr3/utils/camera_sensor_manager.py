@@ -104,15 +104,15 @@ class CameraSensorManager:
                 self._publish_data()
                 
         except Exception as e:
-            # 종료(Disconnect) 과정에서 카메라가 먼저 꺼져서 발생하는 읽기 에러를 무시하여 세그폴트 방지
+            # Ignore read errors caused by the camera being shut down first during disconnect, to prevent a segfault
             pass
 
     def _publish_data(self) -> None:
         now_msg = self.node.get_clock().now().to_msg()
 
         for cam_name, frame in self._raw_data.items():
-            # 만약 이번 루프에서 프레임이 유실되어 이전 프레임(또는 None)이 있더라도 
-            # is_initialized가 True인 상태에서는 처리 (None인 경우는 스킵)
+            # Even if a frame is lost this loop and only a previous frame (or None) remains,
+            # process it while is_initialized is True (skip it when it is None)
             if frame is None:
                 continue 
 

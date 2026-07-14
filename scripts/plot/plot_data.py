@@ -18,8 +18,8 @@ from lerobot_robot_fr3.fr3 import FR3Robot
 # ─── task feature loading ─────────────────────────────────────────────────────
 
 def load_task_features(task_name: str) -> Tuple[Dict, Dict]:
-    """Factory task를 인스턴스화해서 observation_features, log_features를 반환.
-    robot.connect() 없이 __init__만으로 접근 가능."""
+    """Instantiate the Factory task and return observation_features, log_features.
+    Accessible via __init__ alone, without robot.connect()."""
     try:
         from lerobot_robot_fr3.tasks.factory.factory import Factory
     except ImportError as e:
@@ -32,15 +32,15 @@ def load_task_features(task_name: str) -> Tuple[Dict, Dict]:
     return task.observation_features, task.log_features
 
 
-# ─── sim CSV 컬럼명 정규화 ────────────────────────────────────────────────────
-# sim CSV: x/y/z, w/x/y/z 네이밍 → _0/_1/_2, _0/_1/_2/_3 인덱스 네이밍
+# ─── sim CSV column name normalization ────────────────────────────────────────────────────
+# sim CSV: x/y/z, w/x/y/z naming → _0/_1/_2, _0/_1/_2/_3 index naming
 
 _AXIS_TO_IDX = {"x": 0, "y": 1, "z": 2}
 _QUAT_TO_IDX = {"w": 0, "x": 1, "y": 2, "z": 3}
 
 
 def _normalize_sim_df(df: pd.DataFrame) -> pd.DataFrame:
-    """sim CSV의 x/y/z, w/x/y/z 컬럼 suffix를 _0/_1/... 인덱스로 rename."""
+    """Rename the sim CSV's x/y/z, w/x/y/z column suffixes to _0/_1/... indices."""
     rename_map: Dict[str, str] = {}
     for col in df.columns:
         m = re.match(r"^(.+_quat)_([wxyz])$", col)
@@ -77,19 +77,19 @@ def _ensure_comparison_aliases(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# ─── feature → 컬럼명 / y축 라벨 헬퍼 ───────────────────────────────────────
+# ─── feature → column name / y-axis label helpers ───────────────────────────────────────
 
 def features_total_dim(features: Dict[str, Tuple[int, ...]]) -> int:
     return sum(int(np.prod(s)) for s in features.values())
 
 
 def feature_flat_cols(key: str, shape: Tuple[int, ...]) -> List[str]:
-    """단일 feature 키를 평탄화한 컬럼명 리스트.  예) ee_pos → [ee_pos_0, ee_pos_1, ee_pos_2]"""
+    """List of flattened column names for a single feature key.  e.g. ee_pos → [ee_pos_0, ee_pos_1, ee_pos_2]"""
     return [f"{key}_{i}" for i in range(int(np.prod(shape)))]
 
 
 def feature_ylabels(key: str, shape: Tuple[int, ...]) -> List[str]:
-    """dim에 따라 x/y/z 또는 w/x/y/z suffix를 붙인 y축 라벨."""
+    """Y-axis labels with an x/y/z or w/x/y/z suffix depending on dim."""
     dim = int(np.prod(shape))
     if dim == 3:
         suffixes = ["x", "y", "z"]
@@ -101,7 +101,7 @@ def feature_ylabels(key: str, shape: Tuple[int, ...]) -> List[str]:
 
 
 def make_obs_groups(obs_features: Dict[str, Tuple[int, ...]]) -> List[dict]:
-    """observation_features로부터 obs_N 기반 서브그룹 정의를 생성."""
+    """Build obs_N-based subgroup definitions from observation_features."""
     groups: List[dict] = []
     idx = 0
     for key, shape in obs_features.items():
@@ -300,7 +300,7 @@ def print_prev_action_error_summary(
 # ─── drawing primitives ───────────────────────────────────────────────────────
 
 def _plot_pair(ax, sim_vals, real_vals, ylabel, show_legend=False):
-    """ax 하나에 sim/real 한 채널을 오버레이."""
+    """Overlay one sim/real channel on a single ax."""
     n_min = min(len(sim_vals), len(real_vals))
     sim_x  = np.arange(len(sim_vals))
     real_x = np.arange(len(real_vals))
@@ -334,7 +334,7 @@ def _draw_feature_panel(
     n_total_rows: int,
     group_sim_shifts: Dict[str, int] | None = None,
 ):
-    """공통 패널 렌더러: groups 정의를 받아 서브그룹별로 그린다."""
+    """Common panel renderer: takes group definitions and draws each subgroup."""
     inner_gs = gridspec.GridSpecFromSubplotSpec(
         n_total_rows, 1,
         subplot_spec=gs_cell,
@@ -388,7 +388,7 @@ def _draw_feature_panel(
 def draw_log_panel(fig, gs_cell,
                    log_features: Dict[str, Tuple[int, ...]],
                    sim_df: pd.DataFrame, real_df: pd.DataFrame):
-    """왼쪽 패널: log_features 각 키를 서브그룹으로 그린다."""
+    """Left panel: draws each log_features key as a subgroup."""
     groups = [
         {
             "key":     key,
@@ -406,7 +406,7 @@ def draw_obs_panel(fig, gs_cell,
                    obs_features: Dict[str, Tuple[int, ...]],
                    sim_df: pd.DataFrame, real_df: pd.DataFrame,
                    prev_action_sim_shift: int = 0):
-    """오른쪽 패널: obs_N 컬럼 기반으로 observation_features 서브그룹을 그린다."""
+    """Right panel: draws observation_features subgroups based on obs_N columns."""
     groups = [
         {
             "key":     grp["key"],

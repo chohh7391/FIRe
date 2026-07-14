@@ -14,7 +14,7 @@ import torch.multiprocessing as mp
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _build_dummy_env(obs_dim: int, action_dim: int, device: torch.device, clip_actions: float):
-    """rl-games가 요구하는 최소 env 인터페이스."""
+    """Minimal env interface required by rl-games."""
 
     class _DummyEnv:
         observation_space = type("S", (), {"shape": (obs_dim,)})()
@@ -52,10 +52,10 @@ def run_inference_process(
     action_dim: int,
     device_str: str,
 ) -> None:
-    """Inference-only subprocess: ROS 없음, GIL 경합 없음.
+    """Inference-only subprocess: no ROS, no GIL contention.
 
-    obs_flag 대기는 pure spin-wait(continue). time.sleep() 사용 시
-    Linux 타이머 해상도(1-4ms)만큼 불필요한 대기가 붙는다.
+    Waiting on obs_flag is a pure spin-wait (continue). Using time.sleep()
+    would add unnecessary waiting on the order of Linux's timer resolution (1-4ms).
     """
     import yaml
 
@@ -108,12 +108,12 @@ def run_inference_process(
     model_device = next(agent.model.parameters()).device
 
     print("[INFER] Ready.")
-    action_flag.value = 2  # warm-up done 시그널
+    action_flag.value = 2  # warm-up done signal
 
     # ── Inference loop (spin-wait) ────────────────────────────────────────────
     while not stop_event.is_set():
         if obs_flag.value != 1:
-            continue  # ← pure spin: sleep 금지
+            continue  # ← pure spin: no sleep allowed
         obs_flag.value = 0
 
         with torch.inference_mode():
@@ -199,12 +199,12 @@ def _run_rsl_rl_inference(
     actor.eval()
 
     print("[INFER] Ready.")
-    action_flag.value = 2  # warm-up done 시그널
+    action_flag.value = 2  # warm-up done signal
 
     # ── Inference loop (spin-wait) ────────────────────────────────────────────
     while not stop_event.is_set():
         if obs_flag.value != 1:
-            continue  # ← pure spin: sleep 금지
+            continue  # ← pure spin: no sleep allowed
         obs_flag.value = 0
 
         with torch.inference_mode():

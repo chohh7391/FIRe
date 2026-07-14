@@ -30,7 +30,7 @@ def flatten(data: Dict[str, np.ndarray], features: Features) -> Dict[str, float]
 
 
 def obs_to_indexed(obs: Dict[str, np.ndarray], features: Features) -> Dict[str, float]:
-    """obs_features 순서대로 obs_0 ~ obs_N 형태로 직렬화."""
+    """Serialize into obs_0 ~ obs_N form following the obs_features order."""
     out: Dict[str, float] = {}
     idx = 0
     for key, shape in features.items():
@@ -47,7 +47,7 @@ def flat_array_to_indexed(prefix: str, values: np.ndarray) -> Dict[str, float]:
 
 
 def write_obs_shm(obs: dict, buf: np.ndarray, features: Features) -> None:
-    """shared memory에 obs를 직접 slice-write (GIL 최소화)."""
+    """Slice-write obs directly into shared memory (minimizing GIL contention)."""
     offset = 0
     for key, shape in features.items():
         dim = int(np.prod(shape))

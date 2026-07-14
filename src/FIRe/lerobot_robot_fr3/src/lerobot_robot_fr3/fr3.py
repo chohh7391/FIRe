@@ -57,7 +57,7 @@ class FR3Robot(Robot):
         self._executor = None
         self._is_connected = False
         
-        # Action Client 관련 변수
+        # Action Client-related variables
         self._action_client = None
         self._goal_handle = None
         self._goal_accepted = False
@@ -123,29 +123,29 @@ class FR3Robot(Robot):
             ActionChunk, self.config.action_topic, 10
         )
 
-        # 2. Action Client 생성
+        # 2. Create the Action Client
         self._action_client = ActionClient(
             self.node, VisionLanguageAction, self.config.vla_action_server,
             callback_group=self.action_cb_group
         )
 
-        # 3. 백그라운드 ROS 2 스레드 시작 (Action 통신을 위해 spin 필요)
+        # 3. Start the background ROS 2 thread (spin is required for Action communication)
         self.executor_thread = threading.Thread(target=self._spin_ros, daemon=True)
         self.executor_thread.start()
 
-        # 4. Action Server 접속 대기
+        # 4. Wait for the Action Server connection
         print(f"[{self.name}] Waiting for VLA Action Server: {self.config.vla_action_server}...")
         if not self._action_client.wait_for_server(timeout_sec=5.0):
             raise ConnectionError("VLA Action Server is not available.")
 
-        # 5. Goal 전송 및 수락(Accept) 대기
+        # 5. Send the Goal and wait for acceptance
         self._send_vla_goal()
 
         print(f"[{self.name}] Waiting for first EE pose observation...")
         timeout = 5.0
         start_time = time.time()
         while time.time() - start_time < timeout:
-            # 초기 Pose 객체는 0으로 채워져 있으므로, 0이 아닌 값이 들어왔다면 TF가 업데이트된 것
+            # The initial Pose object is filled with zeros, so a non-zero value means the TF has been updated
             if np.any(self.robot_state_manager.ee_pose != 0.0):
                 break
             time.sleep(0.1)
@@ -178,7 +178,7 @@ class FR3Robot(Robot):
         self._send_vla_goal()
 
     def _send_vla_goal(self):
-        """Action Server에 제어 권한(Goal)을 요청합니다."""
+        """Request control authority (Goal) from the Action Server."""
         goal_msg = VisionLanguageAction.Goal()
         goal_msg.model_name = self.config.model_name
         goal_msg.inference_frequency = self.config.inference_frequency
@@ -196,7 +196,7 @@ class FR3Robot(Robot):
         raise ConnectionError("Goal was not accepted by the VLA Action Server.")
 
     def _goal_response_callback(self, future):
-        """Goal 전송에 대한 서버의 응답을 처리합니다."""
+        """Handle the server's response to the Goal request."""
         goal_handle = future.result()
         if not goal_handle.accepted:
             self.node.get_logger().error('VLA Goal rejected by server!')
@@ -414,7 +414,7 @@ class FR3Robot(Robot):
             # after playback (before the success prompt), this is a no-op.
             self.send_success_signal()
             try:
-                # 제어 안전 종료: 활성화된 Goal이 있다면 Cancel 요청 전송
+                # Control-safe shutdown: if there is an active Goal, send a Cancel request
                 if self._goal_handle is not None and self._goal_accepted:
                     print(f"[{self.name}] Canceling VLA Action goal for safe stop...")
                     cancel_future = self._goal_handle.cancel_goal_async()
