@@ -1,3 +1,16 @@
+# FIRe
+
+FIRe is a framework for **force-sensitive robotic manipulation** — contact-rich tasks such as peg
+insertion, gear meshing, and nut threading — that fuses a **VLA (Vision-Language-Action)** model's
+actions with residual actions from a **reinforcement-learning (RL)** policy. The RL policy sits on
+top of the VLA action path and supplies the fine, force-aware corrections that contact-rich assembly
+demands (RL policies are trained separately; FIRe runs the trained models).
+
+It drives a Franka FR3 arm through a ROS 2 controller and supports interchangeable VLA backends
+(GR00T, pi05, OpenVLA). The tooling covers running trained models (`play.py`), collecting
+demonstrations into GR00T LeRobot datasets (`record.py`, including Inverse3 haptic teleoperation),
+and a force/torque sensing stack.
+
 # Installation
 - create conda env
 ```bash
@@ -39,16 +52,64 @@ python scripts/run_vision_server.py
 python scripts/play.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH>
 ```
 
+Add `--use_cameras` and/or `--use_ft_sensor` if the task/model uses camera or force-torque
+inputs; when omitted, zeros are fed in their place.
+
+You can also load a checkpoint from Hugging Face with `--hf_checkpoint <user/repo/path/to/model.pth>`
+in place of a local `--checkpoint <CHECKPOINT_PATH>` (works for both `play.py` and `record.py`).
+
+## Arguments
+
+### `play.py`
+
+| Argument | Description |
+|---|---|
+| `--task` | Task name — `forge-peg_insert`, `forge-gear_mesh`, `forge-nut_thread`, `pick_place`. |
+| `--checkpoint` / `--hf_checkpoint` | RL checkpoint: local path, or Hugging Face `user/repo/path/to/model.pth` (mutually exclusive). |
+| `--vla` | VLA backend: `gr00t` / `pi05` / `openvla`. Omit to run the RL policy only. |
+| `--vla_chunk_size` | Action chunk size (default per backend: gr00t 16, pi05/openvla 8). |
+| `--host` / `--port` | VLA server address (required with `--vla`). |
+| `--use_cameras` | Feed camera views (required for a VLA server); zeros otherwise. |
+| `--use_ft_sensor` | Feed force/torque readings; zeros otherwise. |
+| `--control_hz` | Control-loop rate (default 15). |
+| `--episode_length` | Max steps per episode (logging only; default 88). |
+| `--device` | Torch device (default `cuda:0`). |
+| `--use_sim_time` | Use ROS simulated time. |
+| `--save_path` | Dump a per-step observation CSV. |
+| `--replay <CSV>` + `--raw`/`--pose` | Replay a recorded CSV (obs → inference, or target pose → direct send). |
+
+### `record.py`
+
+Model mode (`--checkpoint`/`--hf_checkpoint`) drives the robot with an RL policy; teleop mode
+(`--teleop inverse3`) records human demonstrations. A dataset is written **only when
+`--lerobot_root` is set** (always GR00T format).
+
+| Argument | Description |
+|---|---|
+| `--task` | Task name (same options as `play.py` above). |
+| `--checkpoint` / `--hf_checkpoint` | Model-mode RL checkpoint (local or Hugging Face). |
+| `--teleop inverse3` | Teleop mode — record demonstrations via the Inverse3 device. |
+| `--lerobot_root` | Dataset save root. Recording happens only when this is set. |
+| `--lerobot_task` | Natural-language task description stored in the dataset. |
+| `--lerobot_repo_id` | Optional Hugging Face dataset repo id. |
+| `--use_cameras` | Record camera views (recommended; zeros otherwise). |
+| `--use_ft_sensor` | Record force/torque readings; zeros otherwise. |
+| `--resume` | Append to an existing dataset root. |
+| `--last_episode [N]` | After recording, encode deferred videos through episode `N` (or the latest). |
+| `--obs_save_path` | Also dump a per-step observation CSV. |
+| `--control_hz` / `--episode_length` / `--device` / `--use_sim_time` | As in `play.py`. |
+| Inverse3 teleop flags (`--inv3_port`, `--versegrip_port`, `--position_scale`, button bits, …) | See [docs/inverse3_teleoperator.md](docs/inverse3_teleoperator.md). |
+
 ## VLA backends (`--vla`)
 
-`play.py` (and `record.py`) can drive the
+`play.py` can drive the
 RL action path with different VLA servers via `--vla`. Supported backends:
 
-| `--vla`   | server                                   | protocol        | default port | chunk size |
-|-----------|------------------------------------------|-----------------|--------------|------------|
-| `gr00t`   | Isaac-GR00T `inference_service.py`       | ZMQ             | 5555         | 16         |
-| `pi05`    | openpi `serve_policy.py`                 | WebSocket       | 8000         | 8          |
-| `openvla` | openvla-oft `vla-scripts/deploy_batch.py`| HTTP            | 8778         | 8          |
+| `--vla`   | server                                   | protocol        | chunk size |
+|-----------|------------------------------------------|-----------------|------------|
+| `gr00t`   | Isaac-GR00T `inference_service.py`       | ZMQ             | 16         |
+| `pi05`    | openpi `serve_policy.py`                 | WebSocket       | 8          |
+| `openvla` | openvla-oft `vla-scripts/deploy_batch.py`| HTTP            | 8          |
 
 The chunk size is auto-selected per backend (override with `--vla_chunk_size`). FIRe speaks a
 single gr00t-canonical observation/action format internally; each client
@@ -56,18 +117,14 @@ single gr00t-canonical observation/action format internally; each client
 backends are interchangeable.
 
 ```bash
-# pi05 (openpi WebSocket server on port 8000)
+# pi05 (openpi WebSocket server)
 python scripts/play.py --task forge-peg_insert --checkpoint <CHECKPOINT_PATH> \
-  --vla pi05 --host 163.180.160.225 --port 8000
+  --vla pi05 --host <HOST> --port <PORT>
 
-# openvla (openvla-oft HTTP server on port 8778)
+# openvla (openvla-oft HTTP server)
 python scripts/play.py --task forge-peg_insert --checkpoint <CHECKPOINT_PATH> \
-  --vla openvla --host localhost --port 8778
+  --vla openvla --host <HOST> --port <PORT>
 ```
-
-> Note: each VLA model must output actions in the task's expected (normalized) action
-> convention. If a model outputs raw metric deltas, motion may look very small after the task's
-> `process_action` scaling — that is a model/units mismatch, not a client-side scale.
 
 ## Play a VLA model only (no RL checkpoint)
 
@@ -91,7 +148,7 @@ cd /home/home/FIRe
 python scripts/play.py \
 --task pick_place \
 --vla gr00t \
---host 163.180.160.225 --port 7777 \
+--host <HOST> --port <PORT> \
 --use_cameras \
 --episode_length 384
 ```
@@ -99,138 +156,32 @@ python scripts/play.py \
 `--use_cameras` is required (the VLA server needs the camera views). Swap `--vla`/`--host`/`--port`
 for `pi05` or `openvla` as in the table above.
 
-- plot data
-python scripts/plot/plot_data.py --task <TASK_NAME> --sim <ISAACLAB_DATA> --real <COLLECTED_DATA> --save_path <FIG_SAVE_PATH>
-
 - record data
 ```bash
-python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla gr00t --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>"
+python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>"
 ```
 
-> **Note:** `record.py` records **GR00T-format** LeRobot datasets only (`--vla gr00t`). To use the
+> **Note:** `record.py` records **GR00T-format** LeRobot datasets only. To use the
 > collected data with **pi05** or **openvla**, first record the GR00T dataset and then convert it to
 > the target format separately — there is no built-in pi05/openvla recorder.
 
 - record GR00T data and encode all deferred videos after the episode
 ```bash
-python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla gr00t --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>" --last_episode
+python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>" --last_episode
 ```
 
 Use `--resume` to append the next episode to the same dataset root. When `--last_episode` is set, `record.py` first records one episode without video encoding, then encodes every missing video in the dataset root after the robot disconnects. Existing `.mp4` files are skipped.
 
 Add `--obs_save_path <DIR>` to also dump per-step observation info to a CSV (same format as `play.py --save_path`), independent of the LeRobot dataset:
 ```bash
-python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --vla gr00t --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>" --obs_save_path <OBS_CSV_DIR>
-```
-
-- plot recorded LeRobot dataset
-```bash
-python scripts/plot/plot_gr00t_dataset.py --root <LEROBOT_DATASET_ROOT> --task <TASK_NAME> --save_path <FIG_SAVE_PATH>
+python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --lerobot_root <PATH_TO_SAVE> --lerobot_task "<TASK_DESCRIPTION>" --obs_save_path <OBS_CSV_DIR>
 ```
 
 - Bota force/torque sensor setup
 
 See the standalone module guide at [src/FIRe/lerobot_ft_sensor/README.md](/home/home/FIRe/src/FIRe/lerobot_ft_sensor/README.md).
 
-
-# TEMPORARY COMMANDS
-- bringup robot
-```bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch cho_franka_bringup bringup_gazebo_robot.launch.py control_mode:=torque vla:=true 
-```
-
-- run vision server
-```bash
-conda activate fire
-python scripts/run_vision_server.py
-```
-
-- run task manager
-```bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch cho_task_manager run_task_manager.launch.py task:=forge
-```
-
-- play
-```bash
-python scripts/play.py \
---task forge-peg_insert \
---checkpoint /home/home/FIRe/checkpoints/FIRe-BL-Forge-PegInsert/nn/Forge.pth
-```
-
-- record (local checkpoint)
-```bash
-python scripts/record.py \
---task forge-peg_insert \
---checkpoint /home/home/FIRe/checkpoints/FIRe-BL-Forge-PegInsert/nn/Forge.pth \
---vla gr00t \
---lerobot_root /home/home/datasets/FIRe/gr00t/peg_insert \
---lerobot_task "Insert peg into the socket" \
---last_episode
-```
-
-Add `--resume` to append another episode to the same dataset root.
-
-- record (huggingface checkpoint)
-```bash
-python scripts/record.py \
---task forge-peg_insert \
---hf_checkpoint bhe1004/VLA_RL-BL-forge-peg_insert/nn/Forge.pth \
---vla gr00t \
---lerobot_root /home/home/datasets/FIRe/gr00t/peg_insert \
---lerobot_task "Insert peg into the socket" \
---last_episode
-```
-
-Add `--resume` to append another episode to the same dataset root.
-
-`--last_episode` can also be used without a value after data has already been collected:
-
-```bash
-conda activate fire
-cd /home/home/FIRe
-
-python scripts/record.py \
---lerobot_root /home/home/datasets/FIRe/gr00t/peg_insert \
---last_episode
-```
-
-This encode-only mode does not connect to the robot. To encode only through a specific inclusive episode index, pass the index explicitly, for example `--last_episode 12`.
-
-- plot latest recorded LeRobot episode
-```bash
-conda activate fire
-cd /home/home/FIRe
-
-python scripts/plot/plot_gr00t_dataset.py \
---root /home/home/datasets/FIRe/gr00t/peg_insert \
---task forge-peg_insert \
---save_path /home/home/FIRe/outputs/plots/gr00t_peg_insert_latest.png
-```
-
-- plot all recorded LeRobot episodes
-```bash
-conda activate fire
-cd /home/home/FIRe
-
-python scripts/plot/plot_gr00t_dataset.py \
---root /home/home/datasets/FIRe/gr00t/peg_insert \
---task forge-peg_insert \
---episode -2 \
---save_path /home/home/FIRe/outputs/plots/gr00t_peg_insert_all.png
-```
-
-- plot one LeRobot episode file directly
-```bash
-conda activate fire
-cd /home/home/FIRe
-
-python scripts/plot/plot_gr00t_dataset.py \
---data /home/home/datasets/FIRe/gr00t/peg_insert/data/chunk-000/episode_000000.parquet \
---task forge-peg_insert \
---save_path /home/home/FIRe/outputs/plots/gr00t_peg_insert_episode_000000.png
-```
+Frequently-used concrete commands are collected in [docs/local_commands.md](docs/local_commands.md).
 
 # Inverse3 Haptic Teleop
 
@@ -261,7 +212,6 @@ source ~/ros2_ws/install/setup.bash
 python scripts/record.py \
 --teleop inverse3 \
 --task forge-peg_insert \
---vla gr00t \
 --lerobot_root /home/home/datasets/FIRe/teleop/peg_insert \
 --lerobot_task "Insert peg into the socket" \
 --use_cameras \
@@ -278,9 +228,3 @@ Add `--resume` to append another episode to the same dataset root.
 - **The instant the button is first pressed**, the Inverse3's current position is automatically matched to the robot's current position (no jump).
 - Releasing the button pauses motion; pressing it again restarts from the current position.
 - Stop recording with `Ctrl+C` → enter whether the episode succeeded, then save.
-
-## Mock test (verify operation without hardware)
-
-```bash
-python src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3/test_teleop_mock.py
-```

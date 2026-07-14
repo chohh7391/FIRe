@@ -108,11 +108,6 @@ def parse_args() -> argparse.Namespace:
     ckpt.add_argument("--checkpoint")
     ckpt.add_argument("--hf_checkpoint")
     p.add_argument("--device", default="cuda:0")
-    p.add_argument(
-        "--vla", type=str, default=None, choices=["gr00t"],
-        help="Recording backend (required for model mode; optional for teleop). "
-        "Only gr00t datasets are recorded; convert to pi05/openvla formats separately.",
-    )
 
     # ── Inverse3 teleop options ───────────────────────────────────────────────
     inv3 = p.add_argument_group("Inverse3 Teleop")
@@ -174,14 +169,12 @@ def parse_args() -> argparse.Namespace:
             p.error("--last_episode must be >= 0")
 
     if args.teleop is None:
-        # Model mode: checkpoint + vla required
+        # Model mode: checkpoint required
         no_ckpt = args.checkpoint is None and args.hf_checkpoint is None
         if no_ckpt:
             if args.last_episode is not None:
                 return args
             p.error("Model mode requires --checkpoint or --hf_checkpoint")
-        if args.vla is None:
-            p.error("Model mode requires --vla")
     else:
         # Teleop mode: checkpoint not needed
         if args.checkpoint is not None or args.hf_checkpoint is not None:
@@ -201,23 +194,21 @@ def _build_recorder(
     root: str | None = None,
     resume: bool | None = None,
 ) -> Any | None:
-    if args.vla is None:
-        return None
     root = args.lerobot_root if root is None else root
+    if root is None:
+        return None
     resume = args.resume if resume is None else resume
-    if args.vla == "gr00t":
-        from fire_core.recorders import GR00TRecorder
-        return GR00TRecorder(
-            robot=robot,
-            repo_id=args.lerobot_repo_id,
-            root=root,
-            task=args.task,
-            task_text=args.lerobot_task,
-            fps=int(round(args.control_hz)),
-            resume=resume,
-            defer_video_encoding=True,
-        )
-    return None
+    from fire_core.recorders import GR00TRecorder
+    return GR00TRecorder(
+        robot=robot,
+        repo_id=args.lerobot_repo_id,
+        root=root,
+        task=args.task,
+        task_text=args.lerobot_task,
+        fps=int(round(args.control_hz)),
+        resume=resume,
+        defer_video_encoding=True,
+    )
 
 
 def _validate_inverse3_ports(args: argparse.Namespace) -> None:
@@ -410,7 +401,7 @@ def main() -> None:
         )
         teleop = Inverse3Teleop(teleop_cfg)
 
-        if args.vla == "gr00t" and not args.use_cameras:
+        if args.lerobot_root is not None and not args.use_cameras:
             print(
                 "[WARN] Recording GR00T dataset without --use_cameras. "
                 "The dataset will contain zero-filled fallback images."
@@ -508,7 +499,7 @@ def main() -> None:
     action_dim = total_dim(action_features)
     print(f"[INFO] obs_dim={obs_dim}  action_dim={action_dim}")
 
-    if args.vla == "gr00t" and not args.use_cameras:
+    if args.lerobot_root is not None and not args.use_cameras:
         print(
             "[WARN] Recording GR00T dataset without --use_cameras. "
             "The dataset will contain zero-filled fallback images."

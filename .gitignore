@@ -8,6 +8,9 @@ checkpoints/
 !.vscode
 .vscode/browse.vc.db*
 
+# Claude Code local settings
+.claude/
+
 # Python
 .DS_Store
 **/*.egg-info/
