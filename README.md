@@ -236,7 +236,7 @@ python scripts/plot/plot_gr00t_dataset.py \
 
 Collect demonstrations directly with the Haption Inverse3 + VerseGrip.
 For initial setup (build / udev serial port configuration / troubleshooting), see the submodule's [SETUP.md](src/FIRe/lerobot_teleoperators/lerobot_teleoperator_inverse3/SETUP.md).
-For the detailed architecture and operation manual, see [docs/inverse3_teleoperator.md](docs/inverse3_teleoperator.md).
+For the operation manual (running / buttons / defaults), see [docs/inverse3_teleoperator.md](docs/inverse3_teleoperator.md).
 
 ## Install
 
