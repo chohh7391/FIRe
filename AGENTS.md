@@ -53,15 +53,6 @@ Use `--hf_checkpoint user/repo/path/to/model.pth` instead of `--checkpoint /loca
 
 To append another episode to the same local GR00T dataset, add `--resume`.
 
-To upload a saved GR00T dataset root to Hugging Face, use:
-
-```bash
-conda activate fire
-python scripts/push_to_hub.py --root /path/to/dataset --repo_id <user>/<dataset_repo>
-```
-
-Do not modify `pi05` recording behavior unless explicitly requested.
-
 ## 🚨 Core Rules & Conventions
 1. **Strict Type Hinting:** Python type hints (`typing` module) are **MANDATORY** for all function signatures, class attributes, and complex variables. Do not write Python code without type hints.
 2. **VLA Abstraction:** When building VLA interfaces, use generic names (e.g., `VLAModel`, `BaseVLA`) instead of specific names like `Gr00tModel`. Do not hardcode "gr00t" in general naming conventions to ensure easy swapping of VLA backends.

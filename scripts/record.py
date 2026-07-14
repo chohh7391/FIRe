@@ -109,8 +109,9 @@ def parse_args() -> argparse.Namespace:
     ckpt.add_argument("--hf_checkpoint")
     p.add_argument("--device", default="cuda:0")
     p.add_argument(
-        "--vla", type=str, default=None, choices=["gr00t", "pi05"],
-        help="Recording backend (required for model mode; optional for teleop).",
+        "--vla", type=str, default=None, choices=["gr00t"],
+        help="Recording backend (required for model mode; optional for teleop). "
+        "Only gr00t datasets are recorded; convert to pi05/openvla formats separately.",
     )
 
     # ── Inverse3 teleop options ───────────────────────────────────────────────
@@ -181,10 +182,6 @@ def parse_args() -> argparse.Namespace:
             p.error("Model mode requires --checkpoint or --hf_checkpoint")
         if args.vla is None:
             p.error("Model mode requires --vla")
-        if args.last_episode is not None and args.vla != "gr00t":
-            p.error("--last_episode is only supported with --vla gr00t")
-        if args.resume and args.vla != "gr00t":
-            p.error("--resume is only supported with --vla gr00t")
     else:
         # Teleop mode: checkpoint not needed
         if args.checkpoint is not None or args.hf_checkpoint is not None:
@@ -219,16 +216,6 @@ def _build_recorder(
             fps=int(round(args.control_hz)),
             resume=resume,
             defer_video_encoding=True,
-        )
-    if args.vla == "pi05":
-        from fire_core.recorders import PI05Recorder
-        return PI05Recorder(
-            robot=robot,
-            repo_id=args.lerobot_repo_id,
-            root=root,
-            task=args.task,
-            task_text=args.lerobot_task,
-            fps=int(round(args.control_hz)),
         )
     return None
 
