@@ -398,10 +398,9 @@ class VLAOnlyStrategy(ControlStrategy):
         action = self._vla_chunk[chunk_idx].astype(np.float32)
         self._buffered_action = {"arm_actions": action}
         if self._vla_gripper_chunk is not None:
-            self._buffered_action["gripper_actions"] = _chunk_row(
-                self._vla_gripper_chunk,
-                chunk_idx,
-            )
+            grip = _chunk_row(self._vla_gripper_chunk, chunk_idx)
+            self._buffered_action["gripper_actions"] = grip
+        
         return StepResult(
             obs_dict=self._robot.get_observation(),
             action_dict=self._buffered_action,

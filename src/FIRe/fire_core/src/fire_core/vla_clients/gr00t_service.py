@@ -2,8 +2,24 @@ import threading
 from queue import Queue
 from typing import Any, Dict
 
+import numpy as np
 import zmq
 from .gr00t.base import BaseInferenceClient, TorchSerializer
+
+
+# GR00T 서버는 gripper(action.gripper_close)를 [0, 1] 규약(0=close, 1=open)으로
+# 반환하지만, FIRe/컨트롤러는 [-1, +1] 규약(-1=close, +1=open)을 기대한다.
+# C++ VLA action server의 닫힘 판정이 `filtered_gripper < 0.0` 이라, 서버가 닫힘을
+# 0.0으로 보내면 조건이 절대 충족되지 않아 gripper가 닫히지 않는다. 선형 remap
+# 2*g-1 로 규약을 일치시킨다 (0 -> -1 닫힘, 1 -> +1 열림).
+_GRIPPER_KEY = "action.gripper_close"
+
+
+def _remap_gripper_convention(response: Dict[str, Any]) -> Dict[str, Any]:
+    if isinstance(response, dict) and _GRIPPER_KEY in response:
+        g = np.asarray(response[_GRIPPER_KEY], dtype=np.float32)
+        response[_GRIPPER_KEY] = g * 2.0 - 1.0
+    return response
 
 
 class AsyncGr00tInferenceClient(BaseInferenceClient):
@@ -86,7 +102,7 @@ class AsyncGr00tInferenceClient(BaseInferenceClient):
         result = self.result_queue.get()
         if "error" in result:
              raise RuntimeError(f"Received error from server or worker: {result['error']}")
-        return result
+        return _remap_gripper_convention(result)
 
     def close(self):
         """Called when the client is shut down to clean up the worker thread."""
@@ -128,4 +144,4 @@ class AsyncGr00tInferenceClient(BaseInferenceClient):
             # Ensure the socket is always closed.
             socket.close()
 
-        return result
+        return _remap_gripper_convention(result)
