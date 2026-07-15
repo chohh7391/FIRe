@@ -158,34 +158,29 @@ Some examples of packages that can likely be excluded are:
 
 ## 1. Save Demo
 
-- You can download pretrained base line policy [here](https://drive.google.com/drive/folders/1FtDIjFQs3Yy5Gnrr_lzFxlC8oiTt4yFa?usp=sharing) 
+Roll out a trained base line policy to save GR00T demos. Requires a trained base line
+checkpoint ([pretrained here](https://drive.google.com/drive/folders/1FtDIjFQs3Yy5Gnrr_lzFxlC8oiTt4yFa?usp=sharing)).
+Set the output `dataset_path` in the matching `{}_gr00t_env_cfg.py`, then run:
 
-- The model trained in base_line must exist to start.
-
-- Edit dataset_path in {}_gr00t_env_cfg.py
-
-![alt text](gr00t/image.png)
-
-- PegInsert Demo Save
 ```bash
-python scripts/reinforcement_learning/rl_games/play.py --task=FireLab-VLA-Gr00t-Forge-PegInsert-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
+python scripts/reinforcement_learning/rl_games/play.py \
+    --task=<DEMO_SAVE_TASK_ID> \
+    --headless --enable_cameras \
+    --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
 ```
 
-- GearMesh Demo Save
-```bash
-python scripts/reinforcement_learning/rl_games/play.py --task=FireLab-VLA-Gr00t-Forge-GearMesh-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
+Available Demo-Save task ids:
+
+```text
+FireLab-VLA-Gr00t-Factory-PegInsert-Demo-Save-Direct-v0
+FireLab-VLA-Gr00t-Factory-GearMesh-Demo-Save-Direct-v0
+FireLab-VLA-Gr00t-Factory-NutThread-Demo-Save-Direct-v0
+FireLab-VLA-Gr00t-Forge-PegInsert-Demo-Save-Direct-v0
+FireLab-VLA-Gr00t-Forge-GearMesh-Demo-Save-Direct-v0
+FireLab-VLA-Gr00t-Forge-NutThread-Demo-Save-Direct-v0
 ```
 
-- NutThread Demo Save
-```bash
-python scripts/reinforcement_learning/rl_games/play.py --task=FireLab-VLA-Gr00t-Forge-NutThread-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
-```
-
-- Automate Demo Save
-  - Automate tasks have been removed from this repository.
-
-- You can use hugging face
-  - add `--huggingface` in terminal
+Add `--huggingface` to push the dataset to the Hugging Face Hub.
 
 
 ## 2. Train RL with a VLA Server
@@ -401,33 +396,4 @@ python source/isaaclab_tasks/isaaclab_tasks/direct/automate/run_w_id.py --assemb
 (e.g)
 ```bash
 python scripts/reinforcement_learning/rl_games/train.py --task=FireLab-VLA-Gr00t-Forge-PegInsert-Direct-v1 --headless --enable_cameras --wandb-entity=chohh7391-kyung-hee-university --wandb-project-name=VLA_RL-VLA_RL-gr00t --wandb-name=forge-peg_insert --huggingface --repo_id=bhe1004/VLA_RL-VLA_RL-gr00t-forge-peg_insert
-```
-
-
-# Generate Dataset via Teleoperation
-
-- transfer isaaclab demos to gr00t dataset
-```bash
-python datasets/gr00t-rl/utils/hdf5_to_gr00t_demo.py
-```
-
-- record demos
-```bash
-python scripts/tools/record_demos.py --task FireLab-BaseLine-Stack-IK-Rel-Gr00t-v0 --device cpu --teleop_device keyboard --dataset_file ./datasets/dataset.hdf5 --num_demos 10 --enable_cameras --low_pass_filter
-```
-
-- replay demos
-```bash
-python scripts/tools/replay_demos.py --task FireLab-BaseLine-Stack-IK-Rel-Gr00t-v0 --device cpu --dataset_file ./datasets/dataset.hdf5 --enable_cameras
-```
-
-- augment dataset
-```bash
-# annotate
-python scripts/imitation_learning/isaaclab_mimic/annotate_demos.py --device cpu --enable_cameras --task FireLab-BaseLine-Stack-IK-Rel-Gr00t-Mimic-v0 --auto --input_file ./datasets/dataset.hdf5 --output_file ./datasets/annotated_dataset.hdf5 --headless
-
-# augment
-python scripts/imitation_learning/isaaclab_mimic/generate_dataset.py \
---device cpu --enable_cameras --headless --num_envs 10 --generation_num_trials 1000 \
---input_file ./datasets/annotated_dataset.hdf5 --output_file ./datasets/generated_dataset.hdf5
 ```
