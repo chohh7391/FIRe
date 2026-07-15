@@ -64,14 +64,20 @@ uses privileged simulator state, the actor uses only `o^res`.
 
 ## Repository layout
 
-This is a git **superproject** that pulls together two independently versioned repositories as
-submodules.
+This is a single **monorepo** holding both sides of the system. The simulation and deployment
+codebases were merged in with their **full git history** (via `git subtree`), so `fire_lab/` and
+`fire_deploy/` are ordinary directories here, not submodules — one clone, one history, one remote.
 
 ```
 FIRe/
-├── fire_lab/     → chohh7391/fire_lab   Simulation & training side
-└── fire_deploy/  → chohh7391/FIRe       Real-robot deployment side
+├── fire_lab/     Simulation & training side (Isaac Lab)
+│   └── _isaaclab/   nested submodule → isaac-sim/IsaacLab (pinned)
+└── fire_deploy/  Real-robot deployment side (ROS 2)
+    └── src/FIRe/.../lerobot_teleoperator_inverse3/   nested submodule (Haply Inverse3)
 ```
+
+Only two genuinely external dependencies remain as **nested submodules**: the Isaac Lab engine
+under `fire_lab/_isaaclab` and the Haply Inverse3 teleoperator under `fire_deploy`.
 
 ### `fire_lab/` — simulation & training
 
@@ -126,7 +132,8 @@ jamming/entry failures) each contribute significantly. The same residual policy 
 
 ## Getting started
 
-Clone the workspace with its submodules:
+Clone the repository. `fire_lab/` and `fire_deploy/` come with it directly; the two nested
+submodules (Isaac Lab, Inverse3) are pulled with `--recurse-submodules`:
 
 ```bash
 git clone --recurse-submodules <this-repo-url> FIRe
@@ -150,8 +157,11 @@ copy the checkpoint → run it on the real robot from `fire_deploy`.
 
 ## Notes
 
-- `fire_lab` and `fire_deploy` retain their own git histories and remotes; commit changes inside the
-  respective submodule, then update the submodule pointer here.
+- `fire_lab/` and `fire_deploy/` are plain directories in this monorepo — edit and commit them
+  directly here; there is no submodule pointer to bump. Their pre-merge history is preserved in the
+  log (imported via `git subtree`).
+- The two nested submodules (`fire_lab/_isaaclab`, the Inverse3 teleoperator under `fire_deploy`) are
+  external dependencies; run `git submodule update --init --recursive` after cloning to populate them.
 
 ## Citation
 
