@@ -62,6 +62,8 @@ python -m pip install zmq scikit-learn pyarrow fastparquet av json_numpy
     `scripts/reinforcement_learning/list_envs.py` so they are listed.
 
 
+# VLA-RL
+
 ## 1. Save Demo
 
 Roll out a trained base line policy to save GR00T demos. Requires a trained base line
@@ -249,16 +251,16 @@ pip install --no-build-isolation flash-attn==2.7.1.post4
 
 ```bash
 python scripts/gr00t_finetune.py \
-    --dataset-path /home/hyunho_RCI/datasets/gr00t-rl/<TASK_NAME>/ \
+    --dataset-path <DATASET_ROOT>/<TASK_NAME>/ \
     --num-gpus 1 \
     --batch-size 32 \
-    --output-dir /home/hyunho_RCI/Isaac-GR00T/checkpoints/<TASK_NAME> \
+    --output-dir <OUTPUT_DIR>/<TASK_NAME> \
     --max-steps 20000 \
     --embodiment-tag franka \
     --data-config franka_triple_cam \
     --video-backend torchvision_av \
     --push_to_hub \
-    --hub_model_id bhe1004/<TASK_NAME>
+    --hub_model_id <HF_USERNAME>/<TASK_NAME>
 ```
 
 - Eval gr00t model
@@ -266,17 +268,17 @@ python scripts/gr00t_finetune.py \
 python scripts/eval_policy.py \
     --plot \
     --embodiment_tag franka \
-    --model_path  bhe1004/<TASK_NAME> \
+    --model_path  <HF_USERNAME>/<TASK_NAME> \
     --data_config franka_triple_cam \
     --embodiment_tag franka \
-    --dataset_path /home/hyunho_RCI/datasets/gr00t-rl/<TASK_NAME>/ \
+    --dataset_path <DATASET_ROOT>/<TASK_NAME>/ \
     --video_backend decord \
     --modality_keys eef_position_delta eef_rotation_delta gripper_close \
-    --save_plot_path /home/hyunho_RCI/Isaac-GR00T/plots/<TASK_NAME>/eef_pose.png
+    --save_plot_path <PLOT_DIR>/<TASK_NAME>/eef_pose.png
 ```
 
 
-## 3. Train VLA-RL Policy
+## 4. Train VLA-RL Policy
 
 - run gr00t server
 
