@@ -35,7 +35,7 @@ import torch
 import isaaclab_tasks  # noqa: F401
 from isaaclab_tasks.utils import parse_env_cfg
 
-import vla_lab.tasks  # noqa: F401
+import fire_lab.tasks  # noqa: F401
 
 
 def main():

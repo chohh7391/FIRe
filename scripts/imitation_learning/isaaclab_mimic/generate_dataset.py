@@ -72,7 +72,7 @@ import torch
 from isaaclab.envs import ManagerBasedRLMimicEnv
 
 import isaaclab_mimic.envs  # noqa: F401
-import vla_lab.mimic.envs  # noqa: F401
+import fire_lab.mimic.envs  # noqa: F401
 
 if args_cli.enable_pinocchio:
     import isaaclab_mimic.envs.pinocchio_envs  # noqa: F401

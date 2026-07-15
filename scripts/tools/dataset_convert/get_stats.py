@@ -4,7 +4,7 @@ import json
 import numpy as np
 import pandas as pd
 
-base_folder = "/home/home/vla_lab/datasets/gr00t-rl/cube_stack" # TODO: Edit This!!!
+base_folder = "/home/home/fire_lab/datasets/gr00t-rl/cube_stack" # TODO: Edit This!!!
 parquet_folder = os.path.join(base_folder, "data/chunk-000")
 stats_json_path = os.path.join(base_folder, "meta/stats.json")
 

@@ -11,9 +11,9 @@
 - 구조/보상 정석: `_isaaclab/source/isaaclab_tasks/isaaclab_tasks/manager_based/manipulation/lift/`
   - `lift_env_cfg.py`, `mdp/rewards.py`, `mdp/observations.py`, `mdp/terminations.py`
   - `config/franka/{joint_pos_env_cfg,ik_rel_env_cfg}.py`, `config/franka/agents/rsl_rl_ppo_cfg.py`
-- repo 내 manager-based 관례: `source/vla_lab/vla_lab/tasks/manager_based/base_line/stack/`
-- 로봇/제어 레퍼런스(direct): `source/vla_lab/vla_lab/tasks/direct/base_line/forge/`, `.../factory/`
-- FR3 asset: `source/vla_lab/vla_lab/assets/fr3_with_ft_sensor/fr3_with_ft_sensor.py`
+- repo 내 manager-based 관례: `source/fire_lab/fire_lab/tasks/manager_based/base_line/stack/`
+- 로봇/제어 레퍼런스(direct): `source/fire_lab/fire_lab/tasks/direct/base_line/forge/`, `.../factory/`
+- FR3 asset: `source/fire_lab/fire_lab/assets/fr3_with_ft_sensor/fr3_with_ft_sensor.py`
 
 ---
 
@@ -38,7 +38,7 @@
 
 ## 파일 구조 (신규)
 ```
-source/vla_lab/vla_lab/tasks/manager_based/base_line/pick_place/
+source/fire_lab/fire_lab/tasks/manager_based/base_line/pick_place/
   __init__.py
   pick_place_env_cfg.py          # Scene + MDP(보상/종료/관측/커맨드/이벤트) base, lift_env_cfg 미러
   mdp/
@@ -119,8 +119,8 @@ source/vla_lab/vla_lab/tasks/manager_based/base_line/pick_place/
 - `_PLAY` 변형(num_envs 축소, corruption off)도 추가.
 
 ### Step 11 — 등록 (`config/franka/__init__.py`)
-- `gym.register("VlaLab-BaseLine-PickPlace-Franka-v0", ...)` (joint_pos)
-- `gym.register("VlaLab-BaseLine-PickPlace-Franka-IK-Rel-v0", ...)` (ik_rel)
+- `gym.register("FireLab-BaseLine-PickPlace-Franka-v0", ...)` (joint_pos)
+- `gym.register("FireLab-BaseLine-PickPlace-Franka-IK-Rel-v0", ...)` (ik_rel)
 - `rsl_rl_cfg_entry_point` → `rsl_rl_ppo_cfg:PickPlacePPORunnerCfg` (LiftCube 미러, `experiment_name="fr3_pick_place"`).
 
 ### Step 12 — 검증

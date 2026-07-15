@@ -122,7 +122,7 @@ from isaaclab.envs.ui import EmptyWindow
 from isaaclab.managers import DatasetExportMode
 
 # import isaaclab_tasks  # noqa: F401
-import vla_lab.tasks  # noqa: F401
+import fire_lab.tasks  # noqa: F401
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
 # import logger

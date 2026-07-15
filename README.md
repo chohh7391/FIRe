@@ -12,13 +12,13 @@ This repository is a framework that uses a VLA model as a backbone to improve su
 
 ```bash
 # 1) Conda env
-conda create -n vla_lab python=3.11
-conda activate vla_lab
+conda create -n fire_lab python=3.11
+conda activate fire_lab
 
 # 2) Clone the repo
 cd $HOME
-git clone https://github.com/chohh7391/vla_lab.git
-cd vla_lab
+git clone https://github.com/chohh7391/fire_lab.git
+cd fire_lab
 
 # 3) Isaac Sim SDK (v5.1.0)
 pip install --upgrade pip
@@ -36,7 +36,7 @@ sudo apt install -y cmake build-essential
 python _isaaclab/scripts/tutorials/00_sim/create_empty.py --headless
 
 # 7) Dev install
-python -m pip install -e source/vla_lab
+python -m pip install -e source/fire_lab
 
 # 8) Extra dependencies
 python -m pip install zmq scikit-learn pyarrow fastparquet av json_numpy
@@ -46,7 +46,7 @@ python -m pip install zmq scikit-learn pyarrow fastparquet av json_numpy
 
     - Listing the available tasks:
 
-        Note: It the task name changes, it may be necessary to update the search pattern `"VlaLab-"`
+        Note: It the task name changes, it may be necessary to update the search pattern `"FireLab-"`
         (in the `scripts/reinforcement_learning/list_envs.py` file) so that it can be listed.
 
         ```bash
@@ -91,7 +91,7 @@ This helps in indexing all the python modules for intelligent suggestions while 
 
 ### Setup as Omniverse Extension (Optional)
 
-We provide an example UI extension that will load upon enabling your extension defined in `source/vla_lab/vla_lab/ui_extension_example.py`.
+We provide an example UI extension that will load upon enabling your extension defined in `source/fire_lab/fire_lab/ui_extension_example.py`.
 
 To enable your extension, follow these steps:
 
@@ -131,7 +131,7 @@ In this case, add the path to your extension in `.vscode/settings.json` under th
 ```json
 {
     "python.analysis.extraPaths": [
-        "<path-to-ext-repo>/source/vla_lab"
+        "<path-to-ext-repo>/source/fire_lab"
     ]
 }
 ```
@@ -168,17 +168,17 @@ Some examples of packages that can likely be excluded are:
 
 - PegInsert Demo Save
 ```bash
-python scripts/reinforcement_learning/rl_games/play.py --task=VlaLab-VLA-Gr00t-Forge-PegInsert-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
+python scripts/reinforcement_learning/rl_games/play.py --task=FireLab-VLA-Gr00t-Forge-PegInsert-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
 ```
 
 - GearMesh Demo Save
 ```bash
-python scripts/reinforcement_learning/rl_games/play.py --task=VlaLab-VLA-Gr00t-Forge-GearMesh-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
+python scripts/reinforcement_learning/rl_games/play.py --task=FireLab-VLA-Gr00t-Forge-GearMesh-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
 ```
 
 - NutThread Demo Save
 ```bash
-python scripts/reinforcement_learning/rl_games/play.py --task=VlaLab-VLA-Gr00t-Forge-NutThread-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
+python scripts/reinforcement_learning/rl_games/play.py --task=FireLab-VLA-Gr00t-Forge-NutThread-Demo-Save-Direct-v0 --headless --enable_cameras --checkpoint=<BASE_LINE_CHECKPOINT_PATH>
 ```
 
 - Automate Demo Save
@@ -199,7 +199,7 @@ Smoke test:
 
 ```bash
 python scripts/reinforcement_learning/rl_games/train.py \
-    --task=VlaLab-VLA-Gr00t-Factory-PegInsert-Direct-v1 \
+    --task=FireLab-VLA-Gr00t-Factory-PegInsert-Direct-v1 \
     --headless \
     --enable_cameras \
     --num_envs=2 \
@@ -212,7 +212,7 @@ Training:
 
 ```bash
 python scripts/reinforcement_learning/rl_games/train.py \
-    --task=VlaLab-VLA-Gr00t-Factory-PegInsert-Direct-v1 \
+    --task=FireLab-VLA-Gr00t-Factory-PegInsert-Direct-v1 \
     --headless \
     --enable_cameras \
     env.vla_host=<GR00T_SERVER_IP> \
@@ -222,12 +222,12 @@ python scripts/reinforcement_learning/rl_games/train.py \
 Available GR00T task ids:
 
 ```text
-VlaLab-VLA-Gr00t-Factory-PegInsert-Direct-v1
-VlaLab-VLA-Gr00t-Factory-GearMesh-Direct-v1
-VlaLab-VLA-Gr00t-Factory-NutThread-Direct-v1
-VlaLab-VLA-Gr00t-Forge-PegInsert-Direct-v1
-VlaLab-VLA-Gr00t-Forge-GearMesh-Direct-v1
-VlaLab-VLA-Gr00t-Forge-NutThread-Direct-v1
+FireLab-VLA-Gr00t-Factory-PegInsert-Direct-v1
+FireLab-VLA-Gr00t-Factory-GearMesh-Direct-v1
+FireLab-VLA-Gr00t-Factory-NutThread-Direct-v1
+FireLab-VLA-Gr00t-Forge-PegInsert-Direct-v1
+FireLab-VLA-Gr00t-Forge-GearMesh-Direct-v1
+FireLab-VLA-Gr00t-Forge-NutThread-Direct-v1
 ```
 
 ### Pi05
@@ -236,7 +236,7 @@ Smoke test:
 
 ```bash
 python scripts/reinforcement_learning/rl_games/train.py \
-    --task=VlaLab-VLA-Pi05-Factory-PegInsert-Direct-v1 \
+    --task=FireLab-VLA-Pi05-Factory-PegInsert-Direct-v1 \
     --headless \
     --enable_cameras \
     --num_envs=2 \
@@ -249,7 +249,7 @@ Training:
 
 ```bash
 python scripts/reinforcement_learning/rl_games/train.py \
-    --task=VlaLab-VLA-Pi05-Factory-PegInsert-Direct-v1 \
+    --task=FireLab-VLA-Pi05-Factory-PegInsert-Direct-v1 \
     --headless \
     --enable_cameras \
     env.vla_host=<PI05_SERVER_IP> \
@@ -259,12 +259,12 @@ python scripts/reinforcement_learning/rl_games/train.py \
 Available Pi05 task ids:
 
 ```text
-VlaLab-VLA-Pi05-Factory-PegInsert-Direct-v1
-VlaLab-VLA-Pi05-Factory-GearMesh-Direct-v1
-VlaLab-VLA-Pi05-Factory-NutThread-Direct-v1
-VlaLab-VLA-Pi05-Forge-PegInsert-Direct-v1
-VlaLab-VLA-Pi05-Forge-GearMesh-Direct-v1
-VlaLab-VLA-Pi05-Forge-NutThread-Direct-v1
+FireLab-VLA-Pi05-Factory-PegInsert-Direct-v1
+FireLab-VLA-Pi05-Factory-GearMesh-Direct-v1
+FireLab-VLA-Pi05-Factory-NutThread-Direct-v1
+FireLab-VLA-Pi05-Forge-PegInsert-Direct-v1
+FireLab-VLA-Pi05-Forge-GearMesh-Direct-v1
+FireLab-VLA-Pi05-Forge-NutThread-Direct-v1
 ```
 
 ### OpenVLA
@@ -276,7 +276,7 @@ Smoke test:
 
 ```bash
 python scripts/reinforcement_learning/rl_games/train.py \
-    --task=VlaLab-VLA-OpenVLA-Factory-PegInsert-Direct-v1 \
+    --task=FireLab-VLA-OpenVLA-Factory-PegInsert-Direct-v1 \
     --headless \
     --enable_cameras \
     --num_envs=2 \
@@ -289,7 +289,7 @@ Training:
 
 ```bash
 python scripts/reinforcement_learning/rl_games/train.py \
-    --task=VlaLab-VLA-OpenVLA-Factory-PegInsert-Direct-v1 \
+    --task=FireLab-VLA-OpenVLA-Factory-PegInsert-Direct-v1 \
     --headless \
     --enable_cameras \
     env.vla_host=<OPENVLA_SERVER_IP> \
@@ -299,9 +299,9 @@ python scripts/reinforcement_learning/rl_games/train.py \
 Available OpenVLA task ids:
 
 ```text
-VlaLab-VLA-OpenVLA-Factory-PegInsert-Direct-v1
-VlaLab-VLA-OpenVLA-Factory-GearMesh-Direct-v1
-VlaLab-VLA-OpenVLA-Factory-NutThread-Direct-v1
+FireLab-VLA-OpenVLA-Factory-PegInsert-Direct-v1
+FireLab-VLA-OpenVLA-Factory-GearMesh-Direct-v1
+FireLab-VLA-OpenVLA-Factory-NutThread-Direct-v1
 ```
 
 Notes:
@@ -335,12 +335,12 @@ pip install --no-build-isolation flash-attn==2.7.1.post4
 
 - Replace the files at `Isaac-GR00T/gr00t/data/embodiment_tags.py` and `Isaac-GR00T/gr00t/experiment/data_config.py` with the files from the gr00t folder within the repository.
   
-- change meta folder in dataset like `~/vla_lab/gr00t/meta`
+- change meta folder in dataset like `~/fire_lab/gr00t/meta`
 
 - take care three things
   - 1st: In `episodes.jsonl`, edit "tasks" except "valid". And edit "length" to your total_frames
   - 2nd: In `info.json`, edit "total_episodes" and "total_frames"
-  - 3rd: Change stats.json file using `vla_lab/gr00t/utils/get_stats.py`
+  - 3rd: Change stats.json file using `fire_lab/gr00t/utils/get_stats.py`
   - 4th: In `tasks.jsonl`, edit "task" at "task_index": 0
 
 
@@ -385,7 +385,7 @@ cd ~/Isaac-GR00T
 python scripts/inference_service.py --server --model_path <GR00T_MODEL_PATH> --embodiment-tag franka --data-config franka_triple_cam --denoising-steps 4 --port {PORT_ID}
 ```
 
-- change port id to {PORT_ID} in source/vla_lab/vla_lab/envs/direct_rl_gr00t_env.py
+- change port id to {PORT_ID} in source/fire_lab/fire_lab/envs/direct_rl_gr00t_env.py
 
 - Train vla-rl policy
 ```bash
@@ -400,7 +400,7 @@ python source/isaaclab_tasks/isaaclab_tasks/direct/automate/run_w_id.py --assemb
 
 (e.g)
 ```bash
-python scripts/reinforcement_learning/rl_games/train.py --task=VlaLab-VLA-Gr00t-Forge-PegInsert-Direct-v1 --headless --enable_cameras --wandb-entity=chohh7391-kyung-hee-university --wandb-project-name=VLA_RL-VLA_RL-gr00t --wandb-name=forge-peg_insert --huggingface --repo_id=bhe1004/VLA_RL-VLA_RL-gr00t-forge-peg_insert
+python scripts/reinforcement_learning/rl_games/train.py --task=FireLab-VLA-Gr00t-Forge-PegInsert-Direct-v1 --headless --enable_cameras --wandb-entity=chohh7391-kyung-hee-university --wandb-project-name=VLA_RL-VLA_RL-gr00t --wandb-name=forge-peg_insert --huggingface --repo_id=bhe1004/VLA_RL-VLA_RL-gr00t-forge-peg_insert
 ```
 
 
@@ -413,18 +413,18 @@ python datasets/gr00t-rl/utils/hdf5_to_gr00t_demo.py
 
 - record demos
 ```bash
-python scripts/tools/record_demos.py --task VlaLab-BaseLine-Stack-IK-Rel-Gr00t-v0 --device cpu --teleop_device keyboard --dataset_file ./datasets/dataset.hdf5 --num_demos 10 --enable_cameras --low_pass_filter
+python scripts/tools/record_demos.py --task FireLab-BaseLine-Stack-IK-Rel-Gr00t-v0 --device cpu --teleop_device keyboard --dataset_file ./datasets/dataset.hdf5 --num_demos 10 --enable_cameras --low_pass_filter
 ```
 
 - replay demos
 ```bash
-python scripts/tools/replay_demos.py --task VlaLab-BaseLine-Stack-IK-Rel-Gr00t-v0 --device cpu --dataset_file ./datasets/dataset.hdf5 --enable_cameras
+python scripts/tools/replay_demos.py --task FireLab-BaseLine-Stack-IK-Rel-Gr00t-v0 --device cpu --dataset_file ./datasets/dataset.hdf5 --enable_cameras
 ```
 
 - augment dataset
 ```bash
 # annotate
-python scripts/imitation_learning/isaaclab_mimic/annotate_demos.py --device cpu --enable_cameras --task VlaLab-BaseLine-Stack-IK-Rel-Gr00t-Mimic-v0 --auto --input_file ./datasets/dataset.hdf5 --output_file ./datasets/annotated_dataset.hdf5 --headless
+python scripts/imitation_learning/isaaclab_mimic/annotate_demos.py --device cpu --enable_cameras --task FireLab-BaseLine-Stack-IK-Rel-Gr00t-Mimic-v0 --auto --input_file ./datasets/dataset.hdf5 --output_file ./datasets/annotated_dataset.hdf5 --headless
 
 # augment
 python scripts/imitation_learning/isaaclab_mimic/generate_dataset.py \
