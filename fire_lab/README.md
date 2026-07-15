@@ -22,10 +22,10 @@ robot from [`fire_deploy/`](../fire_deploy).
 conda create -n fire_lab python=3.11
 conda activate fire_lab
 
-# 2) Clone the repo
+# 2) Clone the monorepo (fire_lab lives inside it)
 cd $HOME
-git clone https://github.com/chohh7391/fire_lab.git
-cd fire_lab
+git clone --recurse-submodules https://github.com/chohh7391/FIRe.git
+cd FIRe/fire_lab
 
 # 3) Isaac Sim SDK (v5.1.0)
 pip install --upgrade pip
@@ -34,8 +34,9 @@ pip install "isaacsim[all,extscache]==5.1.0" --extra-index-url https://pypi.nvid
 # 4) Pytorch (CUDA 12.8)
 pip install -U torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
 
-# 5) Isaac Lab (v2.3.0)
-git clone -b v2.3.0 git@github.com:isaac-sim/IsaacLab.git _isaaclab
+# 5) Isaac Lab (v2.3.0) — vendored as the _isaaclab submodule
+#    Populated by the --recurse-submodules clone above; if _isaaclab is empty,
+#    run `git submodule update --init --recursive` from the repo root first.
 sudo apt install -y cmake build-essential
 ./_isaaclab/isaaclab.sh --install
 

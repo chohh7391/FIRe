@@ -25,7 +25,7 @@ Inverse3 teleoperator under `fire_deploy`).
 ## Getting started
 
 ```bash
-git clone --recurse-submodules <this-repo-url> FIRe
+git clone --recurse-submodules https://github.com/chohh7391/FIRe.git
 cd FIRe
 ```
 

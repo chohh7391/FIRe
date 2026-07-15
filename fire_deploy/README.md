@@ -24,7 +24,7 @@ Training the RL residual policy and fine-tuning the VLA model happen in
 conda create -n fire python=3.10
 conda activate fire
 git clone --recurse-submodules https://github.com/chohh7391/FIRe.git
-cd FIRe
+cd FIRe/fire_deploy
 pip install -r requirements.txt
 ```
 
@@ -186,7 +186,7 @@ python scripts/record.py --task <TASK_NAME> --checkpoint <CHECKPOINT_PATH> --ler
 
 - Bota force/torque sensor setup
 
-See the standalone module guide at [src/FIRe/lerobot_ft_sensor/README.md](/home/home/FIRe/src/FIRe/lerobot_ft_sensor/README.md).
+See the standalone module guide at [src/FIRe/lerobot_ft_sensor/README.md](src/FIRe/lerobot_ft_sensor/README.md).
 
 Frequently-used concrete commands are collected in [docs/local_commands.md](docs/local_commands.md).
 
