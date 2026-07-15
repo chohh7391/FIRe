@@ -1,6 +1,6 @@
 [submodule "fire_lab"]
 	path = fire_lab
-	url = git@github.com:chohh7391/vla_lab.git
+	url = git@github.com:chohh7391/fire_lab.git
 [submodule "fire_deploy"]
 	path = fire_deploy
 	url = https://github.com/chohh7391/FIRe.git
