@@ -1,15 +1,22 @@
-# FIRe
+# FIRe — Real-Robot Deployment (`fire_deploy`)
 
-FIRe is a framework for **force-sensitive robotic manipulation** — contact-rich tasks such as peg
-insertion, gear meshing, and nut threading — that fuses a **VLA (Vision-Language-Action)** model's
-actions with residual actions from a **reinforcement-learning (RL)** policy. The RL policy sits on
-top of the VLA action path and supplies the fine, force-aware corrections that contact-rich assembly
-demands (RL policies are trained separately; FIRe runs the trained models).
+This is the **real-robot deployment side** of FIRe. It runs trained models on a physical Franka
+FR3: it loads an RL residual policy (trained separately in [`fire_lab/`](../fire_lab)) and adds its
+fine, force-aware corrections on top of a VLA model's action chunk, driving the arm through a ROS 2
+controller. Interchangeable VLA backends (GR00T, pi05, OpenVLA) are supported.
 
-It drives a Franka FR3 arm through a ROS 2 controller and supports interchangeable VLA backends
-(GR00T, pi05, OpenVLA). The tooling covers running trained models (`play.py`), collecting
-demonstrations into GR00T LeRobot datasets (`record.py`, including Inverse3 haptic teleoperation),
-and a force/torque sensing stack.
+> For the overall FIRe method, results, paper, and how the simulation and deployment sides fit
+> together, see the **[top-level project README](../README.md)**.
+
+**Scope of this component** (execution & data collection only — no training or simulator):
+
+- **Run trained models** — `play.py` (VLA + RL residual, or either alone).
+- **Collect demonstrations** — `record.py` into GR00T LeRobot datasets, including Inverse3 haptic
+  teleoperation.
+- **Sensing stack** — wrist force/torque sensor and RealSense cameras.
+
+Training the RL residual policy and fine-tuning the VLA model happen in
+[`fire_lab/`](../fire_lab), not here.
 
 # Installation
 - create conda env

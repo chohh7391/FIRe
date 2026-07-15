@@ -6,7 +6,14 @@
 
 ## Overview
 
-This repository is a framework that uses a VLA model as a backbone to improve success rates with RL.
+This is the **simulation and training side** of FIRe, built on Isaac Lab. It uses a frozen VLA model
+as the base policy and trains a force-aware **residual RL policy** on top to improve success on
+contact-rich assembly. It also generates demonstrations for VLA fine-tuning and integrates the VLA
+backends (GR00T, pi05, OpenVLA) as inference servers. The trained checkpoints are run on the real
+robot from [`fire_deploy/`](../fire_deploy).
+
+> For the overall FIRe method, results, paper, and how the simulation and deployment sides fit
+> together, see the **[top-level project README](../README.md)**.
 
 ## Installation
 

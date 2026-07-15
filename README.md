@@ -93,6 +93,8 @@ An Isaac Lab (Isaac Sim 5.1 / Isaac Lab 2.3) extension. It provides:
 
 Output: trained residual-policy checkpoints, consumed by `fire_deploy`.
 
+**Full setup & training guide:** [`fire_lab/README.md`](fire_lab/README.md).
+
 ### `fire_deploy/` — real-robot deployment
 
 The ROS 2 execution stack that runs on the physical **Franka FR3**. It:
@@ -104,6 +106,8 @@ The ROS 2 execution stack that runs on the physical **Franka FR3**. It:
 
 No training, reward, or simulator lives here — it is execution-only, and its observation/action
 pipeline mirrors the simulator's so that policies transfer zero-shot.
+
+**Full setup & run guide:** [`fire_deploy/README.md`](fire_deploy/README.md).
 
 ### How the two connect (the sim→real contract)
 
