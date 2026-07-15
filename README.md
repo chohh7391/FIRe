@@ -65,13 +65,12 @@ uses privileged simulator state, the actor uses only `o^res`.
 ## Repository layout
 
 This is a git **superproject** that pulls together two independently versioned repositories as
-submodules, plus the paper sources (kept locally, not tracked).
+submodules.
 
 ```
 FIRe/
 ├── fire_lab/     → chohh7391/fire_lab   Simulation & training side
-├── fire_deploy/  → chohh7391/FIRe       Real-robot deployment side
-└── _2026__RAL___VLA_RL/                 Paper sources (git-ignored, reference only)
+└── fire_deploy/  → chohh7391/FIRe       Real-robot deployment side
 ```
 
 ### `fire_lab/` — simulation & training
@@ -151,8 +150,6 @@ copy the checkpoint → run it on the real robot from `fire_deploy`.
 
 ## Notes
 
-- The paper sources under `_2026__RAL___VLA_RL/` are intentionally **git-ignored**; they are kept
-  locally as a reference for understanding the codebase and are not part of the tracked project.
 - `fire_lab` and `fire_deploy` retain their own git histories and remotes; commit changes inside the
   respective submodule, then update the submodule pointer here.
 
