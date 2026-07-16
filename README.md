@@ -12,15 +12,10 @@ contact-rich assembly succeeds.*
 
 ## Repository layout
 
-A single monorepo holding both sides of the system (merged with full git history via `git subtree`):
-
 - **[`fire_lab/`](fire_lab/README.md)** — simulation & training (Isaac Lab). Trains the residual RL
   policy on a frozen VLA and integrates the VLA backends (GR00T, pi05, OpenVLA).
 - **[`fire_deploy/`](fire_deploy/README.md)** — real-robot deployment (ROS 2). Runs the trained
   models on a physical Franka FR3.
-
-Two external dependencies remain as nested submodules (Isaac Lab under `fire_lab/_isaaclab`, the
-Inverse3 teleoperator under `fire_deploy`).
 
 ## Getting started
 
